@@ -1,0 +1,194 @@
+services:
+  # ==========================
+  # Backend Core
+  # ==========================
+  backend-core:
+    user: "0:0"
+    build:
+      args:
+        API_CONTAINER_PORT: ${API_CONTAINER_PORT:-8000}
+        HEALTHCHECK_INTERVAL: ${HEALTHCHECK_INTERVAL:-30s}
+        HEALTHCHECK_RETRIES: ${HEALTHCHECK_RETRIES:-3}
+        HEALTHCHECK_START_PERIOD: ${HEALTHCHECK_START_PERIOD:-10s}
+        HEALTHCHECK_TIMEOUT: ${HEALTHCHECK_TIMEOUT:-10s}
+      context: .
+      dockerfile: Dockerfile
+      network: "host"
+    container_name: ${API_CONTAINER_NAME:-backend-core}
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - capabilities: [gpu]
+    #           device_ids: ["${GPU_DEVICE_IDS}"]
+    #           driver: nvidia
+    env_file:
+      - ./.env
+    environment:
+      # Aplicación
+      ALLOW_INSECURE_AUTH: ${ALLOW_INSECURE_AUTH:-true}
+      API_DEBUG: ${API_DEBUG:-false}
+      API_ENV: ${API_ENV:-production}
+      PYTHONPATH: /app/src
+      # API_SECRET_KEY: ${API_SECRET_KEY}
+      FORCE_HTTPS: ${FORCE_HTTPS:-false}
+      # Base de Datos
+      DB_HOST: ${DB_HOST:-localhost}
+      DB_NAME: ${DB_NAME:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-password123}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_USER: ${DB_USER:-postgres}
+      
+      
+      # Neo4j
+      NEO4J_DATABASE: ${NEO4J_DATABASE:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-password123}
+      NEO4J_URI: ${NEO4J_URI:-bolt://neo4j:7687}
+      NEO4J_URL: ${NEO4J_URI:-bolt://neo4j:7687}
+      NEO4J_USER: ${NEO4J_USER:-neo4j}
+      
+      # Ollama
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      OLLAMA_MODEL_NAME: ${OLLAMA_MODEL_NAME:-deepseek-r1:1.5b}
+      OLLAMA_REQUEST_TIMEOUT: ${OLLAMA_REQUEST_TIMEOUT:-60}
+      OLLAMA_DEFAULT_MAX_TOKENS: ${OLLAMA_DEFAULT_MAX_TOKENS:-8000}
+      OLLAMA_DEFAULT_TEMPERATURE: ${OLLAMA_DEFAULT_TEMPERATURE:-0.2}
+      # Configuración GPU
+      # CUDA_VISIBLE_DEVICES: "${CUDA_VISIBLE_DEVICES}"
+      # NVIDIA_DRIVER_CAPABILITIES: "${NVIDIA_DRIVER_CAPABILITIES}"
+      # NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES}"
+    healthcheck:
+      interval: ${HEALTHCHECK_INTERVAL:-30s}
+      retries: ${HEALTHCHECK_RETRIES:-3}
+      start_period: ${HEALTHCHECK_START_PERIOD:-10s}
+      test: ["CMD", "curl", "-f", "http://localhost:${API_CONTAINER_PORT:-8000}/health"]
+      timeout: ${HEALTHCHECK_TIMEOUT:-10s}
+    networks:
+      legal-system-network:
+        aliases:
+          - backend-core
+          - backend-core-service
+    ports:
+      - "${API_HOST_PORT:-8000}:${API_CONTAINER_PORT:-8000}"
+    restart: ${DOCKER_RESTART_POLICY:-unless-stopped}
+    volumes:
+      - ./logs:/app/logs
+      - ./src:/app/src:ro
+      - ml_output:/app/ml_output
+
+  # ==========================
+  # Base de Datos de Grafos Neo4j
+  # ==========================
+  neo4j:
+    container_name: neo4j
+    environment:
+      NEO4J_AUTH: neo4j/password123
+      NEO4J_dbms_connector_bolt_listen__address: 0.0.0.0:7687
+      NEO4J_dbms_connector_http_listen__address: 0.0.0.0:7474                        
+      NEO4J_dbms_default__database: ${NEO4J_DATABASE:-neo4j}
+      NEO4J_dbms_memory_heap_initial__size: ${NEO4J_HEAP_INITIAL_SIZE:-1G}
+      NEO4J_dbms_memory_heap_max__size: ${NEO4J_HEAP_MAX_SIZE:-2G}
+      NEO4J_dbms_memory_pagecache_size: ${NEO4J_PAGECACHE_SIZE:-1G}
+      NEO4J_dbms_security_procedures_allowlist: ${NEO4J_PROCEDURES_ALLOWLIST:-apoc.*,gds.*}
+      NEO4J_dbms_security_procedures_unrestricted: ${NEO4J_PROCEDURES_UNRESTRICTED:-gds.*,apoc.*}
+      NEO4J_PLUGINS: 'apoc,graph-data-science'
+    healthcheck:
+      interval: 5s
+      retries: 30
+      start_period: 300s
+      test: ["CMD-SHELL", "ps aux | grep -q '[j]ava.*neo4j' || exit 1"]
+      timeout: 10s
+    image: neo4j:5.24
+    networks:
+      - legal-system-network
+    ports:
+      - "${NEO4J_BOLT_PORT:-7687}:${NEO4J_BOLT_PORT:-7687}"   # Protocolo Bolt
+      - "${NEO4J_WEB_PORT:-7474}:${NEO4J_WEB_PORT:-7474}"     # Interfaz Web
+    restart: ${DOCKER_RESTART_POLICY:-unless-stopped}
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+      - neo4j_plugins:/plugins
+
+  neo4j-init:
+    command: "/var/lib/neo4j/bin/cypher-shell -a bolt://neo4j:${NEO4J_BOLT_PORT:-7678} -u ${NEO4J_USER:-neo4j} -p ${NEO4J_PASSWORD:-password123} -d ${NEO4J_DATABASE:-neo4j} -f /init/001_init.cypher"
+    container_name: ${NEO4J_INIT_CONTAINER_NAME:-neo4j-init}
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-lc"]
+    image: ${NEO4J_IMAGE:-neo4j:5.24}
+    networks:
+      - legal-system-network
+    restart: ${NEO4J_INIT_RESTART_POLICY:-no}
+    volumes:
+      - ./src/app/migrations/neo4j:/init:ro
+
+  # ==========================
+  # Ollama - Modelo LLM
+  # ==========================
+  ollama:
+    image: ollama/ollama
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "11435:11434"
+    volumes:
+      - model_cache:/root/.ollama
+    networks:
+      - legal-system-network
+    command: ["serve"]
+    
+
+  ollama-pull:
+    image: ollama/ollama
+    container_name: ollama-pull
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    depends_on:
+      - ollama
+    command: ["pull", "deepseek-r1:1.5b"]
+    volumes:
+      - model_cache:/root/.ollama
+    networks:
+      - legal-system-network
+    restart: "no"
+
+  postgres_dev:
+    image: pgvector/pgvector:pg16
+    container_name: mvp-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password123
+      POSTGRES_DB: postgres
+      TZ: ${TZ:-UTC}
+    ports:
+      - "5435:5432"  # Puerto 5435 en host, 5432 en contenedor
+    volumes:
+      - postgres_dev:/var/lib/postgresql/data
+      - ./database/init/00-schema-clean.sql:/docker-entrypoint-initdb.d/00-schema-clean.sql:ro
+    networks:
+      - legal-system-network
+    
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-admin_etl} -d ${POSTGRES_DB:-etl_logs} -h 127.0.0.1"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 120s
+
+networks:
+  legal-system-network:
+    name: legal-system-network
+    
+
+volumes:
+  model_cache:
+  neo4j_conf:
+  neo4j_data:
+  neo4j_logs:
+  neo4j_plugins:
+  postgres_dev:
+  ml_output:
