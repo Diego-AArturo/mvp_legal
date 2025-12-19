@@ -105,6 +105,62 @@ class PgVectorAgent:
                 "pgvector_retrieval_status": {"success": False, "error": str(e)},
             }
 
+    async def _do_retrieve(
+        self,
+        *,
+        conversation_id: str,
+        user_query: str,
+        include_kinds: Optional[List[str]] = None,
+    ) -> tuple[Dict[str, Any], List[VectorSearchResult]]:
+        """
+        Recupera contexto de conversacion y resultados semanticos.
+
+        include_kinds se acepta para compatibilidad con el grafo, pero no filtra
+        resultados en este retriever basico.
+        """
+        conversation_context = await self.retriever.get_conversation_context(
+            conversation_id=conversation_id,
+            user_query=user_query,
+            recent_messages_limit=self.recent_messages_limit,
+        )
+        docs = await self.retriever.semantic_search_documents(
+            query=user_query,
+            limit=self.semantic_search_limit,
+            similarity_threshold=self.settings.databases.postgresql.pgvector_similarity_threshold,
+        )
+        return conversation_context, docs
+
+    async def _combine_search_results(
+        self,
+        conversation_context: Dict[str, Any],
+        document_results: List[VectorSearchResult],
+        user_query: str,
+    ) -> List[VectorSearchResult]:
+        """
+        Combina resultados de documentos con resultados semanticos de conversacion.
+        """
+        combined: List[VectorSearchResult] = []
+
+        for item in document_results or []:
+            combined.append(self._coerce_vector_result(item))
+
+        for item in (conversation_context or {}).get("semantic_results", []) or []:
+            combined.append(self._coerce_vector_result(item))
+
+        return combined
+
+    def _coerce_vector_result(self, item: Any) -> VectorSearchResult:
+        if isinstance(item, VectorSearchResult):
+            return item
+        if isinstance(item, dict):
+            return VectorSearchResult(
+                content=item.get("content") or "",
+                similarity_score=float(item.get("similarity_score") or 0.0),
+                metadata=item.get("metadata") or {},
+                source_id=item.get("source_id"),
+            )
+        return VectorSearchResult(content=str(item), similarity_score=0.0, metadata={})
+
     async def _persist_message(self, conversation_id: str, message: Dict[str, Any]) -> Dict[str, Any]:
         role = (message.get("role") or message.get("sender") or "user").lower()
         content = (message.get("content") or message.get("text") or "").strip()

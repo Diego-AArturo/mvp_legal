@@ -401,7 +401,7 @@ class PgVectorRetriever:
                     WHERE content IS NOT NULL
                       AND length(btrim(content)) > 0
                       AND embedding IS NOT NULL
-                      AND (role IN ('user'::public.chat_role, 'assistant'::public.chat_role)
+                      AND (role::text IN ('user', 'assistant')
                            OR (role IS NULL AND sender IN ('user', 'assistant')))
                       AND (1 - (embedding <=> CAST(:query_embedding AS vector))) >= :thr
                     ORDER BY embedding <=> CAST(:query_embedding AS vector)
@@ -622,11 +622,10 @@ class PgVectorRetriever:
         insert_stmt = text(
             """
             INSERT INTO messages (
-                id, conversation_id, sender, role, content, model, minio_key,
-                minio_bucket, metadata, embedding, created_at, updated_at
+                id, conversation_id, sender, role, content, model, metadata, embedding, created_at, updated_at
             ) VALUES (
-                :id, :conversation_id, :sender, CAST(:role AS public.chat_role), :content, :model,
-                NULL, NULL, '{}'::jsonb, CAST(:embedding AS vector), now(), now()
+                :id, :conversation_id, :sender, :role, :content, :model,
+                '{}'::jsonb, CAST(:embedding AS vector), now(), now()
             )
             """
         )
@@ -666,7 +665,7 @@ class PgVectorRetriever:
             WHERE conversation_id = :cid
               AND content IS NOT NULL
               AND length(btrim(content)) > 0
-              AND (role IN ('user'::public.chat_role, 'assistant'::public.chat_role) OR (role IS NULL AND sender IN ('user', 'assistant')))
+              AND (role::text IN ('user', 'assistant') OR (role IS NULL AND sender IN ('user', 'assistant')))
             ORDER BY created_at DESC
             LIMIT :lim
             """
@@ -690,7 +689,7 @@ class PgVectorRetriever:
             WHERE conversation_id = :cid
               AND content IS NOT NULL
               AND length(btrim(content)) > 0
-              AND (role IN ('user'::public.chat_role, 'assistant'::public.chat_role) OR (role IS NULL AND sender IN ('user', 'assistant')))
+              AND (role::text IN ('user', 'assistant') OR (role IS NULL AND sender IN ('user', 'assistant')))
             ORDER BY created_at DESC
             LIMIT :lim
             """
@@ -724,7 +723,7 @@ class PgVectorRetriever:
             "  AND embedding IS NOT NULL",
             "  AND content IS NOT NULL",
             "  AND length(btrim(content)) > 0",
-            "  AND (role IN ('user'::public.chat_role, 'assistant'::public.chat_role)",
+            "  AND (role::text IN ('user', 'assistant')",
             "       OR (role IS NULL AND sender IN ('user', 'assistant')))",
             "  AND (1 - (embedding <=> CAST(:query_embedding AS vector))) >= :thr",
         ]
@@ -782,7 +781,7 @@ class PgVectorRetriever:
                 "WHERE conversation_id = :cid",
                 "  AND content IS NOT NULL",
                 "  AND length(btrim(content)) > 0",
-                "  AND (role IN ('user'::public.chat_role, 'assistant'::public.chat_role) OR (role IS NULL AND sender IN ('user', 'assistant')))",
+                "  AND (role::text IN ('user', 'assistant') OR (role IS NULL AND sender IN ('user', 'assistant')))",
                 "  AND to_tsvector('spanish', coalesce(content,'')) @@ ",
                 "      plainto_tsquery('spanish', :q)",
                 "  AND ts_rank_cd(to_tsvector('spanish', coalesce(content,'')),",

@@ -352,7 +352,7 @@ def _attempt_emergency_persistence(state: Any) -> None:
         }
 
         logger.critical(
-            "Emergency persistence: workflow terminated due to security block",
+            "Emergency persistence: workflow terminated early",
             extra={
                 "emergency_data": emergency_data,
                 "conversation_id": conversation_id,
@@ -417,142 +417,6 @@ def make_graph(
     )
 
     # ---- Node wrappers --------------------------------------------------------
-
-    #  NUEVO: Security Agent node (primer filtro de entrada)
-    async def _security_agent_node(state: Any, config: Optional[RunnableConfig] = None) -> Any:
-        """Nodo de validación de seguridad - primer filtro de entrada."""
-        conversation_id = getf(state, "conversation_id", "unknown")
-
-        logger.debug(
-            "Nodo de seguridad iniciado",
-            extra={
-                "conversation_id": conversation_id,
-                "state_type": str(type(state)),
-                "has_pre_detected_role": getf(state, "pre_detected_role") is not None,
-            },
-        )
-
-        if isinstance(state, dict):
-            if "pre_detected_role" in state:
-                print(f"[SECURITY_NODE] state['pre_detected_role'] = {state['pre_detected_role']}")
-        else:
-            print(f"[SECURITY_NODE] State is NOT a dict, it's: {type(state).__name__}")
-            print(f"[SECURITY_NODE] State has pre_detected_role attr: {hasattr(state, 'pre_detected_role')}")
-            if hasattr(state, "pre_detected_role"):
-                print(f"[SECURITY_NODE] state.pre_detected_role = {state.pre_detected_role}")
-
-        # Usar getf para acceso seguro
-        pre_detected_role_via_getf = getf(state, "pre_detected_role", "NOT_FOUND")
-        print(f"[SECURITY_NODE] getf(state, 'pre_detected_role') = {pre_detected_role_via_getf}")
-
-        conversation_id = getf(state, "conversation_id", "unknown")
-        trace_id = getf(state, "workflow_metadata", {}).get("trace_id", "unknown")
-
-        #  PRESERVAR pre_detected_role desde el inicio
-        pre_detected_role = getf(state, "pre_detected_role", None)
-        print(f"[SECURITY_NODE] Received pre_detected_role: {pre_detected_role}")
-
-        logger.info(
-            "Security agent node started",
-            extra={
-                "conversation_id": conversation_id,
-                "trace_id": trace_id,
-                "state_type": type(state).__name__,
-                "flow_mode": getf(state, "flow_mode", ""),
-                "operation": (getf(state, "generation_request", {}) or {}).get("operation", ""),
-                "pre_detected_role": pre_detected_role,
-            },
-        )
-
-        try:
-            # Ejecutar SecurityAgent para todos los flujos.
-            # El agente está diseñado para manejar casos sin user_query (como tutela_init) y permitirles pasar.
-            
-            # CRÍTICO: Preservar campos críticos del estado que SecurityAgent no retorna
-            # El SecurityAgent solo retorna campos relacionados con seguridad, no otros campos del estado
-            generation_request = getf(state, "generation_request", None)
-            pgvector_request = getf(state, "pgvector_request", None)
-            neo4j_request = getf(state, "neo4j_request", None)
-            vector_results = getf(state, "vector_results", None)
-            graph_results = getf(state, "graph_results", None)
-            conversation_context = getf(state, "conversation_context", None)
-            
-            # Preservar generation_request si no está en deltas
-            
-
-            # Fusionar deltas con el estado existente usando el helper updatef
-            updated_state = updatef(state)
-
-            #  VERIFICAR que pre_detected_role se preservó
-            final_pre_detected_role = getf(updated_state, "pre_detected_role", None)
-            print(f"[SECURITY_NODE] Final pre_detected_role in updated_state: {final_pre_detected_role}")
-
-            # VERIFICAR que generation_request se preservó
-            final_generation_request = getf(updated_state, "generation_request", None)
-            if final_generation_request:
-                final_operation = final_generation_request.get("operation") if isinstance(final_generation_request, dict) else None
-                final_goal = final_generation_request.get("goal") if isinstance(final_generation_request, dict) else None
-                logger.info(
-                    "Security agent node: generation_request preserved",
-                    extra={
-                        "conversation_id": conversation_id,
-                        "trace_id": trace_id,
-                        "operation": final_operation,
-                        "goal": final_goal,
-                    },
-                )
-            else:
-                logger.warning(
-                    "Security agent node: generation_request is None after update",
-                    extra={
-                        "conversation_id": conversation_id,
-                        "trace_id": trace_id,
-                        "had_generation_request_before": bool(generation_request),
-                    },
-                )
-
-            logger.info(
-                "Security agent node completed",
-                extra={
-                    "conversation_id": conversation_id,
-                    "trace_id": trace_id,
-                    "final_pre_detected_role": final_pre_detected_role,
-                    "has_generation_request": bool(final_generation_request),
-                    "generation_request_operation": final_generation_request.get("operation") if isinstance(final_generation_request, dict) else None,
-                    "generation_request_goal": final_generation_request.get("goal") if isinstance(final_generation_request, dict) else None,
-                },
-            )
-
-            return updated_state
-
-        except Exception as e:
-            logger.error(
-                "Security agent node failed",
-                extra={
-                    "conversation_id": conversation_id,
-                    "trace_id": trace_id,
-                    "error": str(e),
-                    "error_type": type(e).__name__,
-                },
-            )
-            # En caso de error en seguridad, ser conservador y bloquear
-            emergency_block_state = updatef(
-                state,
-                {
-                    "should_block": True,
-                    "final_response": ("Error interno de validación de seguridad. " "Por favor, contacta con soporte técnico."),
-                    "security_validation": {
-                        "timestamp": time.time(),
-                        "trace_id": trace_id,
-                        "is_threat": True,
-                        "threat_level": "critical",
-                        "reason": f"SecurityAgent error: {str(e)}",
-                        "validation_applied": False,
-                    },
-                },
-            )
-            return emergency_block_state
-
     async def _orchestrator_plan_node(state: Any, config: Optional[RunnableConfig] = None) -> Any:
         conversation_id = getf(state, "conversation_id", "unknown")
 
@@ -591,16 +455,7 @@ def make_graph(
             )
 
         #  CRÍTICO: Preservar pre_detected_role si no está en deltas
-        if "pre_detected_role" not in deltas and pre_detected_role:
-            deltas["pre_detected_role"] = pre_detected_role
-            print(f"[ORCH_PLAN] Re-adding pre_detected_role to deltas: {pre_detected_role}")
-            logger.info(
-                "Orchestrator: Preserving pre_detected_role from worker",
-                extra={
-                    "conversation_id": conversation_id,
-                    "pre_detected_role": pre_detected_role,
-                },
-            )
+        
 
         # Usar updatef() para mergear deltas con el estado Pydantic actual
         updated_state = updatef(state, deltas)
@@ -844,7 +699,8 @@ def make_graph(
 
         try:
             result_state = await neo4j_agent.run(state_with_request)
-
+            if isinstance(result_state, dict):
+                return updatef(state_with_request, result_state)
             return result_state
         except Exception as neo4j_error:
             import traceback
@@ -1105,7 +961,8 @@ def make_graph(
         return result_state
 
     async def _supervisor_pgvector_node(state: Any, config: Optional[RunnableConfig] = None) -> Any:
-        state = await orchestrator.run_supervisor(state, agent_name="pgvector")
+        deltas = await orchestrator.run_supervisor(state, agent_name="pgvector")
+        state = updatef(state, deltas)
         state = _bump_attempt_counter(state, "pgvector")
         if _should_retry_from_state(state, "pgvector"):
             # cortar si ya alcanzó el tope local
@@ -1122,7 +979,8 @@ def make_graph(
         return state
 
     async def _supervisor_neo4j_node(state: Any, config: Optional[RunnableConfig] = None) -> Any:
-        state = await orchestrator.run_supervisor(state, agent_name="neo4j")
+        deltas = await orchestrator.run_supervisor(state, agent_name="neo4j")
+        state = updatef(state, deltas)
         state = _bump_attempt_counter(state, "neo4j")
         if _should_retry_from_state(state, "neo4j"):
             if _get_attempts(state, "neo4j") >= NEO_MAX_ATTEMPTS:
@@ -1408,39 +1266,6 @@ def make_graph(
         return state
 
     # ---- Routers --------------------------------------------------------------
-
-    #  NUEVO: Router desde SecurityAgent
-    def _route_from_security(state: Any) -> str:
-        """Decide si continuar al orchestrator o bloquear por seguridad."""
-        conversation_id = getf(state, "conversation_id", "unknown")
-        trace_id = getf(state, "workflow_metadata", {}).get("trace_id", "unknown")
-        should_block = getf(state, "should_block", False)
-        security_validation = getf(state, "security_validation", {})
-
-        if should_block:
-            logger.warning(
-                "Security router: BLOCKING request - terminating workflow",
-                extra={
-                    "conversation_id": conversation_id,
-                    "trace_id": trace_id,
-                    "security_reason": security_validation.get("reason", "unknown"),
-                    "threat_level": security_validation.get("threat_level", "unknown"),
-                    "patterns": security_validation.get("matched_patterns", []),
-                },
-            )
-            return END
-
-        logger.info(
-            "Security router: Request approved - continuing to orchestrator",
-            extra={
-                "conversation_id": conversation_id,
-                "trace_id": trace_id,
-                "security_validated": True,
-            },
-        )
-
-        return NODE_ORCH_PLAN  # Continuar al orchestrator normal
-
     def _route_from_orchestrator(state: Any) -> str:
         conversation_id = getf(state, "conversation_id", "unknown")
         trace_id = getf(state, "workflow_metadata", {}).get("trace_id", "unknown")
@@ -1576,14 +1401,6 @@ def make_graph(
                 "has_final_response": bool(getf(state, "final_response")),
             },
         )
-
-        orchestrator_result = getf(state, "orchestrator_result", {})
-        if orchestrator_result.get("security_blocked"):
-            logger.warning(" ROUTING: Security blocked detected -> END")
-            #  Intentar guardar estado parcial antes de terminar
-            _attempt_emergency_persistence(state)
-            return "END"
-
         #  TEMPORALMENTE DESHABILITADO: Persistencia que causa bucle infinito
         #  Priorizar persistencia si hay pgvector_request pendiente
         # pgvector_request = getf(state, "pgvector_request", None)
@@ -1863,9 +1680,6 @@ def make_graph(
 
     workflow = StateGraph(dict)
 
-    #  NUEVOS: Nodos de seguridad
-    workflow.add_node("security_agent", _security_agent_node)
-
     # Nodos existentes (sin cambios)
     workflow.add_node(NODE_ORCH_PLAN, _orchestrator_plan_node)
     workflow.add_node(NODE_PGV, _pgvector_node)
@@ -1875,18 +1689,8 @@ def make_graph(
     workflow.add_node(NODE_GEN, _generation_node)
     workflow.add_node(NODE_FINAL, _finalize_node)
 
-    #  NUEVO: El flujo comienza en SecurityAgent (era NODE_ORCH_PLAN)
-    workflow.set_entry_point("security_agent")
-
-    #  NUEVO: Routing desde SecurityAgent
-    workflow.add_conditional_edges(
-        "security_agent",
-        _route_from_security,
-        {
-            NODE_ORCH_PLAN: NODE_ORCH_PLAN,  # Continuar al orchestrator
-            END: END,  # Bloquear por seguridad
-        },
-    )
+    # El flujo comienza en el orchestrator
+    workflow.set_entry_point(NODE_ORCH_PLAN)
 
     # Routing desde orchestrator (sin cambios)
     workflow.add_conditional_edges(
@@ -1928,10 +1732,9 @@ def make_graph(
 
     compiled = workflow.compile(checkpointer=checkpointer or MemorySaver())
     logger.info(
-        " Workflow compiled SUCCESSFULLY with Security Layers",
+        " Workflow compiled SUCCESSFULLY",
         extra={
             "nodes": [
-                "security_agent",  #  NUEVO: Primer nodo (entrada)
                 NODE_ORCH_PLAN,
                 NODE_PGV,
                 NODE_SUP_PGV,
@@ -1940,23 +1743,24 @@ def make_graph(
                 NODE_GEN,
                 NODE_FINAL,
             ],
-            "entry": "security_agent",  #  NUEVO: Entrada por SecurityAgent
-            "security_enabled": True,
+            "entry": NODE_ORCH_PLAN,
             "gen_max_attempts": GEN_MAX_ATTEMPTS,
             "pgv_max_attempts": PGV_MAX_ATTEMPTS,
             "neo_max_attempts": NEO_MAX_ATTEMPTS,
             "routing_edges": {
-                "security_agent": ["orchestrator_plan", "END"],  #  NUEVO
                 "orchestrator_plan": ["generation", "pgvector", "neo4j", "finalize", "END"],
                 "pgvector": ["supervisor_pgvector"],
                 "neo4j": ["supervisor_neo4j"],
                 "generation": ["finalize"],
                 "supervisor_pgvector": ["pgvector", "orchestrator_plan"],
                 "supervisor_neo4j": ["neo4j", "orchestrator_plan"],
-                "finalize": ["generation", "END", "orchestrator_plan"],  #  ACTUALIZADO
+                "finalize": ["generation", "END", "orchestrator_plan"],
             },
         },
     )
 
     logger.info(" Graph factory: returning compiled workflow")
     return compiled
+
+
+

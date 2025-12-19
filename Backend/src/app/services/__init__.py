@@ -15,7 +15,6 @@ Arquitectura:
 - ai: Servicios AI/ML (Ollama, salida estructurada, guardrails)
 - postgres: Servicios de persistencia PostgreSQL
 - retrieval: Recuperación de contexto desde PgVector y Neo4j
-- minio: Servicios de almacenamiento de objetos
 - export: Servicios de exportación de documentos
 - ml: Pipelines de machine learning
 - core: Servicios transversales (jobs, layers)

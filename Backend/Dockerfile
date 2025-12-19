@@ -6,32 +6,34 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Dependencias del sistema realmente necesarias
+# Dependencias del sistema mínimas necesarias
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         libpq5 \
         libpq-dev \
         curl \
         tini \
+        ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Instalar dependencias de Python
+# Instalar dependencias
 COPY requirements.txt /app/requirements.txt
 
+# IMPORTANTE: cache pip persistente + no wheel compilation
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --upgrade pip wheel \
-    && pip install --no-cache-dir -r /app/requirements.txt
+    pip install --upgrade pip \
+    && pip install --no-cache-dir -r /app/requirements.txt \
+    && python -m spacy download es_core_news_sm
 
-# Copiar código
+# Copiar app
 COPY src /app/src
 
-# Seguridad: no correr como root
-RUN useradd -m appuser
+# Crear usuario seguro
+RUN useradd --create-home --shell /bin/sh appuser
 USER appuser
 
-# Puertos
 EXPOSE 8000
 
+ENTRYPOINT ["/usr/bin/tini","--"]
 
-ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.main:app", "--host","0.0.0.0","--port","8000"]

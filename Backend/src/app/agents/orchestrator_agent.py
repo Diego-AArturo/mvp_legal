@@ -42,53 +42,7 @@ class _AgentLogServiceStub:
         return None
 
 
-class _SecurityServiceStub:
-    def __init__(self) -> None:
-        self.settings = type(
-            "SettingsStub",
-            (object,),
-            {
-                "get_timeout_config": lambda self: {
-                    "orchestrator": 8000,
-                    "pgvector": 8000,
-                    "neo4j": 8000,
-                    "generation": 8000,
-                }
-            },
-        )()
-        self.dos_settings = type(
-            "DosStub",
-            (object,),
-            {
-                "max_cpu_usage_percent": 95,
-                "max_memory_usage_percent": 95,
-            },
-        )()
-
-    async def check_internal_operation_allowed(self, trace_id: str) -> tuple[bool, Optional[str]]:
-        return True, None
-
-    async def check_request_allowed(self, trace_id: str, user_query: str, client_ip: str) -> tuple[bool, Optional[str]]:
-        return True, None
-
-    async def start_request_tracking(self, trace_id: str, user_query: str, timeout_ms: int) -> None:
-        return None
-
-    async def end_request_tracking(self, trace_id: str, status: str) -> None:
-        return None
-
-    async def check_circuit_breaker_recovery(self, svc: str) -> bool:
-        return True
-
-    async def monitor_resources(self):
-        return type("ResStub", (object,), {"cpu_percent": 0, "memory_percent": 0})()
-
-    async def update_circuit_breaker(self, svc: str, healthy: bool) -> None:
-        return None
-
-
 AgentLogService = _AgentLogServiceStub()
-SecurityService = _SecurityServiceStub
 
 # -------------------------- Helpers: state-agnostic --------------------------
 
@@ -217,7 +171,6 @@ class OrchestratorAgent:
 
         self._neo4j_driver = getattr(neo4j_agent, "driver", None) if neo4j_agent else None
 
-        self.security_service = SecurityService()
         self.ollama_service = OllamaService(settings)
 
         # Cache para embeddings de patrones (optimización)
@@ -413,61 +366,24 @@ class OrchestratorAgent:
                 reason="invalid_state",
             )
 
-        user_query: str = (sd.get("user_query") or "").strip()
-        conversation_id: str = sd.get("conversation_id", "")
-        client_ip: str = sd.get("client_ip", "unknown")
 
-        # Determinar si es una operación interna del grafo
-        is_internal_operation = self._is_internal_graph_operation(sd)
-
-        logger.info(
-            "Orchestrator security check",
-            extra={
-                "trace_id": trace_id,
-                "is_internal_operation": is_internal_operation,
-                "conversation_id": conversation_id,
-                "has_pgvector_request": bool(sd.get("pgvector_request")),
-                "has_final_response": bool(sd.get("final_response")),
-                "is_first_interaction": sd.get("is_first_interaction", True),
-            },
+        # Aumentar timeouts por defecto para flujos largos (Ollama puede tardar)
+        base_timeout_ms = int(
+            max(60000, getattr(self.settings.models.generation, "generation_max_wait_time", 60) * 1000)
         )
-
-        # Puertas de seguridad - más inteligentes
-        if is_internal_operation:
-            # Para operaciones internas, verificación ligera
-            (
-                allowed,
-                reason,
-            ) = await self.security_service.check_internal_operation_allowed(trace_id)
-            if not allowed:
-                logger.warning(
-                    "Internal operation blocked",
-                    extra={"trace_id": trace_id, "reason": reason},
-                )
-                return self._blocked_update(trace_id, reason)
-        else:
-            # Para requests externas, verificación completa o bypass explícito
-            if (sd.get("config") or {}).get("security", {}).get("allow_recursion_like"):
-                allowed, reason = (True, None)
-            else:
-                allowed, reason = await self.security_service.check_request_allowed(trace_id, user_query, client_ip)
-            if not allowed:
-                logger.warning(
-                    "External request blocked",
-                    extra={"trace_id": trace_id, "reason": reason},
-                )
-                return self._blocked_update(trace_id, reason)
-
-        timeout_cfg = self.security_service.settings.get_timeout_config()
-        orch_timeout_ms = timeout_cfg["orchestrator"]
-        await self.security_service.start_request_tracking(trace_id, user_query, orch_timeout_ms)
+        timeout_cfg = {
+            "orchestrator": base_timeout_ms,
+            "pgvector": base_timeout_ms,
+            "neo4j": base_timeout_ms,
+            "generation": int(max(base_timeout_ms, 120000)),
+        }
+        orch_timeout_ms = timeout_cfg['orchestrator']
 
         try:
             res = await asyncio.wait_for(
                 self._compute_plan(state=sd, trace_id=trace_id, timeout_cfg=timeout_cfg),
                 timeout=orch_timeout_ms / 1000,
             )
-            await self.security_service.end_request_tracking(trace_id, "completed")
 
             # Telemetría mínima
             orr = res.setdefault("orchestrator_result", {})
@@ -522,7 +438,6 @@ class OrchestratorAgent:
             return res
 
         except asyncio.TimeoutError as timeout_err:
-            await self.security_service.end_request_tracking(trace_id, "timeout")
             logger.error(
                 "Orchestrator PLAN timeout",
                 extra={"trace_id": trace_id, "timeout_ms": orch_timeout_ms},
@@ -539,7 +454,6 @@ class OrchestratorAgent:
             return self._timeout_update(trace_id, orch_timeout_ms)
         except Exception as e:
             logger.exception("Orchestrator PLAN error", extra={"trace_id": trace_id})
-            await self.security_service.end_request_tracking(trace_id, "error")
 
             #  Log error
             AgentLogService.log_agent_error(log_id, error=e, metadata_update={"phase": "plan"})
@@ -756,8 +670,17 @@ class OrchestratorAgent:
                 state["persist_attempted"] = True
 
         # Include timeout configuration in state for downstream agents
+        # Preserve existing custom timeouts and avoid shrinking values from upstream.
         config_delta = (state.get("config") or {}).copy()
-        config_delta["timeouts"] = timeout_cfg
+        existing_timeouts = (config_delta.get("timeouts") or {}).copy()
+        merged_timeouts = existing_timeouts.copy()
+        for key, value in timeout_cfg.items():
+            try:
+                current = int(existing_timeouts.get(key, 0) or 0)
+            except Exception:
+                current = 0
+            merged_timeouts[key] = max(current, int(value))
+        config_delta["timeouts"] = merged_timeouts
 
         # DEBUG: Log de la decisión del orchestrator antes de retornar
         logger.info(
@@ -1257,20 +1180,6 @@ class OrchestratorAgent:
             meta["rationale"] = "Policy set to rules"
             meta["elapsed_ms"] = int((time.time() - start) * 1000)
             return meta
-
-        svc = "ollama_routing"
-        if not await self.security_service.check_circuit_breaker_recovery(svc):
-            meta["rationale"] = "Circuit open; rules fallback"
-            meta["elapsed_ms"] = int((time.time() - start) * 1000)
-            return meta
-
-        res = await self.security_service.monitor_resources()
-        if res.cpu_percent > self.security_service.dos_settings.max_cpu_usage_percent or res.memory_percent > self.security_service.dos_settings.max_memory_usage_percent:
-            await self.security_service.update_circuit_breaker(svc, False)
-            meta["rationale"] = "High resource usage; rules fallback"
-            meta["elapsed_ms"] = int((time.time() - start) * 1000)
-            return meta
-
         system_prompt = """Eres un agente de enrutamiento maestro. Su único trabajo es analizar la consulta del usuario y decidir qué contexto de datos se necesita para responderlo.
             No intente responder a la consulta usted mismo.
 
@@ -1353,12 +1262,9 @@ class OrchestratorAgent:
                 meta["needs_neo4j_ctx"] = bool(parsed.get("needs_neo4j_ctx", False))
                 meta["rationale"] = parsed.get("rationale", "LLM-based routing decision")
                 meta["policy_source"] = "llm_gemma_ollama"
-                await self.security_service.update_circuit_breaker(svc, True)
             else:
-                await self.security_service.update_circuit_breaker(svc, False)
                 meta["rationale"] = "LLM returned no JSON; rules fallback"
         except Exception as e:
-            await self.security_service.update_circuit_breaker(svc, False)
             meta["rationale"] = f"LLM routing failed: {e}"
 
         meta["elapsed_ms"] = int((time.time() - start) * 1000)
@@ -1837,34 +1743,6 @@ Clasifica como EDIT o CHAT."""
     # ==========================================================================
     # Error factories (dict plano)
     # ==========================================================================
-
-    def _blocked_update(self, trace_id: str, reason: str) -> Dict[str, Any]:
-        return {
-            "orchestrator_decision": {
-                "use_vector_search": False,
-                "use_graph_analysis": False,
-                "direct_generation": False,
-                "reasoning": f"Security block: {reason}",
-                "confidence": 0.0,
-            },
-            "workflow_metadata": {
-                "security_block": {
-                    "trace_id": trace_id,
-                    "reason": reason,
-                    "timestamp": time.time(),
-                }
-            },
-            "orchestrator_result": {
-                "agent": "orchestrator",
-                "trace_id": trace_id,
-                "success": False,
-                "security_blocked": True,
-                "phase": "plan",
-            },
-            "orchestrator_success": False,
-            "final_response": f"Request blocked for security reasons: {reason}",
-        }
-
     def _timeout_update(self, trace_id: str, timeout_ms: int) -> Dict[str, Any]:
         return {
             "orchestrator_decision": {
@@ -1954,3 +1832,9 @@ Clasifica como EDIT o CHAT."""
             return True
 
         return False
+
+
+
+
+
+

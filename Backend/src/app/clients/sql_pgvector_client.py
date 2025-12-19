@@ -3,7 +3,8 @@ Cliente para PostgreSQL con soporte pgvector.
 
 Proporciona gestión del ciclo de vida de la conexión a PostgreSQL, creación de sesiones
 SQLAlchemy y funciones auxiliares para operaciones de base de datos con soporte vectorial.
-"""
+""" 
+
 
 import asyncio
 import json
@@ -111,6 +112,20 @@ def init_database() -> None:
             session.execute(text("CREATE EXTENSION IF NOT EXISTS citext"))
             session.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
             session.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+            session.execute(
+                text(
+                    """
+                    DO $$
+                    BEGIN
+                      IF NOT EXISTS (
+                        SELECT 1 FROM pg_type WHERE typname = 'chat_role'
+                      ) THEN
+                        CREATE TYPE public.chat_role AS ENUM ('user','assistant','system');
+                      END IF;
+                    END$$;
+                    """
+                )
+            )
         Base.metadata.create_all(bind=engine)
         logger.info("Tablas de base de datos inicializadas exitosamente")
     except Exception as e:

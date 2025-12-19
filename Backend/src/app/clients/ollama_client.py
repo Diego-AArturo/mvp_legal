@@ -70,6 +70,7 @@ class OllamaClient:
         payload: Dict[str, Any] = {
             "model": model_to_use,
             "messages": messages,
+            "stream": False,
         }
         if temperature is not None:
             payload["temperature"] = temperature
@@ -82,7 +83,13 @@ class OllamaClient:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 resp = await client.post(url, json=payload)
                 resp.raise_for_status()
-                data = resp.json()
+                try:
+                    data = resp.json()
+                except Exception:
+                    # Fallback para respuestas no-JSON o con JSONL; tomar la primera linea JSON.
+                    raw = resp.text.strip()
+                    first_line = raw.splitlines()[0] if raw else ""
+                    data = json.loads(first_line)
 
                 # Validación
                 message = data.get("message", {})

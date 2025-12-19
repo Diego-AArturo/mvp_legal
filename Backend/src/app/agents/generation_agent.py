@@ -1,8 +1,5 @@
-"""GGeneración minimal para MVP (compose, edit, chat) sin dependencias legales/registraduría.
-
+"""GGeneración minimal para MVP (compose, edit, chat) 
 - Usa OllamaService para generar texto según la operation solicitada.
-- No realiza enriquecimientos especiales ni llamadas externas adicionales.
-- Mantiene prompts y estructuras de mensajes simples y deterministas.
 """
 
 from __future__ import annotations
@@ -61,7 +58,7 @@ class GenerationAgent:
         vector_results = sd.get("vector_results")
 
         # Construir mensajes para el LLM (sin alterar el contenido de los prompts definidos)
-        system_directive = self._system_directive(goal=operation, current_datetime=current_datetime)
+        system_directive = self._system_directive(operation=operation, goal=goal, current_datetime=current_datetime)
         system_msg = {"role": "system", "content": system_directive}
 
         if operation == "compose":
@@ -95,7 +92,7 @@ class GenerationAgent:
 
         messages = [system_msg, user_msg]
 
-        gen_timeout_ms = int((sd.get("config") or {}).get("timeouts", {}).get("generation", 65000))
+        gen_timeout_ms = int((sd.get("config") or {}).get("timeouts", {}).get("generation", 95000))
 
         logger.info(
             "GenerationAgent: starting LLM call",
@@ -348,7 +345,7 @@ class GenerationAgent:
     # Prompts                                                           #
     # ------------------------------------------------------------------ #
 
-    def _system_directive(self, *, goal: str, current_datetime: Optional[str] = None) -> str:
+    def _system_directive(self, *, operation: str, goal: str, current_datetime: Optional[str] = None) -> str:
         """
         System directive general y reusable.
         Sirve para generar, editar y chatear con soporte RAG.
@@ -360,15 +357,17 @@ class GenerationAgent:
                 "Si debes calcular fechas, devuelve la fecha exacta."
             )
 
-        if goal == "edit":
+        if operation == "edit":
             return self._prompt_edit_generic() + datetime_context
 
-        if goal == "compose":
+        if operation == "compose":
             return (
-                "Eres un asistente profesional experto en redacción y análisis.\n"
-                "Tu tarea es generar contenido claro, preciso y bien estructurado.\n"
-                "Usa el contexto proporcionado si es relevante.\n"
+                "Eres un asistente profesional experto en derecho administrativo.\n"
+                "Tu tarea es generar un borrador claro, preciso y bien estructurado a partir del documento base.\n"
+                "Usa el contexto proporcionado solo si es relevante.\n"
                 "No inventes datos. Si la información es insuficiente, indícalo claramente.\n"
+                "Devuelve SOLO el documento final, sin comentarios ni análisis.\n"
+                "No repitas textualmente el documento base salvo que sea estrictamente necesario.\n"
                 "Escribe en español neutro, formal pero comprensible."
                 + datetime_context
             )

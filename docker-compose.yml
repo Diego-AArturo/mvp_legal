@@ -7,7 +7,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        VITE_BACKEND_URL: ${VITE_BACKEND_URL:-http://backend-core:8000}
+        VITE_BACKEND_URL: ${VITE_BACKEND_URL:-http://localhost:8000/api/v1}
     container_name: ${FRONTEND_CONTAINER_NAME:-frontend-core}
     depends_on:
       - backend-core
@@ -24,6 +24,7 @@ services:
   # Backend Core
   # ==========================
   backend-core:
+    user: "0:0"
     build:
       args:
         API_CONTAINER_PORT: ${API_CONTAINER_PORT:-8000}
@@ -33,6 +34,7 @@ services:
         HEALTHCHECK_TIMEOUT: ${HEALTHCHECK_TIMEOUT:-10s}
       context: ./Backend
       dockerfile: Dockerfile
+      network: "host"
     container_name: ${API_CONTAINER_NAME:-backend-core}
     # deploy:
     #   resources:
@@ -52,11 +54,12 @@ services:
       # API_SECRET_KEY: ${API_SECRET_KEY}
       FORCE_HTTPS: ${FORCE_HTTPS:-false}
       # Base de Datos
-      DB_HOST: ${DB_HOST:-postgres_dev}
+      DB_HOST: ${DB_HOST:-localhost}
       DB_NAME: ${DB_NAME:-postgres}
       DB_PASSWORD: ${DB_PASSWORD:-password123}
       DB_PORT: ${DB_PORT:-5432}
       DB_USER: ${DB_USER:-postgres}
+      POSTGRES_DSN: ${POSTGRES_DSN:-postgresql://postgres:password123@postgres_dev:5432/postgres}
       
       
       # Neo4j
@@ -77,6 +80,8 @@ services:
       # CUDA_VISIBLE_DEVICES: "${CUDA_VISIBLE_DEVICES}"
       # NVIDIA_DRIVER_CAPABILITIES: "${NVIDIA_DRIVER_CAPABILITIES}"
       # NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES}"
+      # CORS
+      BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-["http://localhost:3000"]}
     healthcheck:
       interval: ${HEALTHCHECK_INTERVAL:-30s}
       retries: ${HEALTHCHECK_RETRIES:-3}
@@ -135,7 +140,7 @@ services:
       - neo4j_plugins:/plugins
 
   neo4j-init:
-    command: "/var/lib/neo4j/bin/cypher-shell -a bolt://neo4j:${NEO4J_BOLT_PORT:-7687} -u ${NEO4J_USER:-neo4j} -p ${NEO4J_PASSWORD:-password123} -d ${NEO4J_DATABASE:-neo4j} -f /init/001_init.cypher"
+    command: "/var/lib/neo4j/bin/cypher-shell -a bolt://neo4j:${NEO4J_BOLT_PORT:-7678} -u ${NEO4J_USER:-neo4j} -p ${NEO4J_PASSWORD:-password123} -d ${NEO4J_DATABASE:-neo4j} -f /init/001_init.cypher"
     container_name: ${NEO4J_INIT_CONTAINER_NAME:-neo4j-init}
     depends_on:
       neo4j:
@@ -180,7 +185,7 @@ services:
 
   postgres_dev:
     image: pgvector/pgvector:pg16
-    container_name: mvp-postgres
+    container_name: postgres_dev
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
@@ -191,12 +196,12 @@ services:
       - "5435:5432"  # Puerto 5435 en host, 5432 en contenedor
     volumes:
       - postgres_dev:/var/lib/postgresql/data
-      - ./Backend/database/init/00-schema-clean.sql:/docker-entrypoint-initdb.d/00-schema-clean.sql:ro
+      - ./database/00-schema-clean.sql:/docker-entrypoint-initdb.d/00-schema-clean.sql:ro
     networks:
       - legal-system-network
     
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-postgres} -h 127.0.0.1"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-admin_etl} -d ${POSTGRES_DB:-etl_logs} -h 127.0.0.1"]
       interval: 60s
       timeout: 15s
       retries: 3

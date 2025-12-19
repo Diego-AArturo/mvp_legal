@@ -135,8 +135,8 @@ class OllamaService:
             RuntimeError: Si la generación falla
         """
         try:
-            # Validar y normalizar mensajes para compatibilidad con Gemma
-            normalized_messages = self._normalize_messages_for_gemma(messages)
+            # Validar y normalizar mensajes según el modelo activo
+            normalized_messages = self._prepare_messages_for_model(messages)
 
             if not normalized_messages:
                 raise ValueError("No se proporcionaron mensajes válidos")
@@ -181,6 +181,69 @@ class OllamaService:
         except Exception as e:
             logger.error(f"Error en generación de texto Ollama: {e}")
             raise RuntimeError(f"Generación de texto falló: {e}")
+
+    def _prepare_messages_for_model(
+        self, messages: List[Dict[str, str]]
+    ) -> List[Dict[str, str]]:
+        """
+        Normaliza mensajes según el modelo activo.
+
+        DeepSeek R1 responde mejor con un único mensaje de usuario
+        y sin roles system explícitos para evitar eco del prompt.
+        """
+        model_name = (self.ollama_settings.model_name or "").lower()
+        if model_name.startswith("deepseek-r1"):
+            return self._normalize_messages_for_deepseek(messages)
+        return self._normalize_messages_for_gemma(messages)
+
+    def _normalize_messages_for_deepseek(
+        self, messages: List[Dict[str, str]]
+    ) -> List[Dict[str, str]]:
+        """
+        Ajusta mensajes para DeepSeek R1 con un solo prompt de usuario.
+
+        Evita que el modelo repita instrucciones y reduce el eco de sistema.
+        """
+        if not messages:
+            return []
+
+        system_chunks: List[str] = []
+        user_chunks: List[str] = []
+        assistant_chunks: List[str] = []
+
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            role = (msg.get("role") or "user").strip().lower()
+            content = (msg.get("content") or "").strip()
+            if not content:
+                continue
+
+            if role == "system":
+                system_chunks.append(content)
+            elif role == "assistant":
+                assistant_chunks.append(content)
+            else:
+                user_chunks.append(content)
+
+        parts: List[str] = []
+        if system_chunks:
+            parts.append("INSTRUCCIONES:")
+            parts.append("\n".join(system_chunks))
+        if assistant_chunks:
+            parts.append("HISTORIAL ASISTENTE:")
+            parts.append("\n".join(assistant_chunks))
+        if user_chunks:
+            parts.append("MENSAJE DEL USUARIO:")
+            parts.append("\n".join(user_chunks))
+
+        parts.append(
+            "REGLA FINAL: Responde solo con el contenido final solicitado. "
+            "No repitas instrucciones ni el texto del prompt."
+        )
+
+        merged = "\n\n".join(parts).strip()
+        return [{"role": "user", "content": merged}]
 
     async def generate_with_fallback(
         self,

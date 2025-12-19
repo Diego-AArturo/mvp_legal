@@ -14,9 +14,12 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 
 from app.clients.neo4j_client import get_neo4j_driver
+from app.config.databases import get_postgres_session
 from app.extensions import get_logger
 
 
@@ -101,6 +104,39 @@ def _convert_graph_results_safely(graph_results: Any) -> Dict[str, Any]:
             return {}
 
 
+def _ensure_conversation(
+    db: Session,
+    conversation_id: str,
+    *,
+    title: str,
+    metadata: Dict[str, Any],
+) -> None:
+    exists = db.execute(
+        text("SELECT 1 FROM app_conversations WHERE id = :cid"),
+        {"cid": conversation_id},
+    ).scalar()
+    if exists:
+        return
+    insert_stmt = text(
+        """
+        INSERT INTO app_conversations (
+            id, user_id, title, status, started_at, updated_at, metadata
+        )
+        VALUES (:id, NULL, :title, 'open', now(), now(), CAST(:metadata AS jsonb))
+        ON CONFLICT (id) DO NOTHING
+        """
+    )
+    db.execute(
+        insert_stmt,
+        {
+            "id": conversation_id,
+            "title": title,
+            "metadata": json.dumps(metadata or {}),
+        },
+    )
+    db.commit()
+
+
 # =========================
 # Request/Response Models
 # =========================
@@ -114,10 +150,6 @@ class TutelaRequest(BaseModel):
     conversation_id: Optional[str] = Field(
         None,
         description="ID de conversación opcional; se generará si no se proporciona",
-    )
-    registraduria_role: Optional[str] = Field(
-        None,
-        description="Rol de registraduría opcional; se usará para determinar la respuesta",
     )
 
 
@@ -165,6 +197,7 @@ class ChatStreamRequest(BaseModel):
 async def run_tutela_full_graph(
     request: TutelaRequest,
     neo4j_driver=Depends(get_neo4j_driver),
+    db: Session = Depends(get_postgres_session),
 ):
     """
     Ejecuta el flujo completo de generación de respuesta para una tutela inicial usando LangGraph.
@@ -190,7 +223,6 @@ async def run_tutela_full_graph(
     - 500: Error en el workflow de generación
     """
     start_time = time.time()
-    print("=== TUTELA ENDPOINT CALLED ===")
     logger.info("=== TUTELA ENDPOINT CALLED ===")
     # logger.info(f"Request: {request}")
 
@@ -224,21 +256,31 @@ async def run_tutela_full_graph(
 
         logger.info(f"Starting tutela flow with conversation_id: {normalized_cid}")
 
+        _ensure_conversation(
+            db,
+            normalized_cid,
+            title="Tutela (inicial)",
+            metadata={
+                "source": "generation_tutela",
+                "external_conversation_id": external_cid,
+            },
+        )
+
         # Build initial state for the graph (use normalized UUID)
         # Sin heurísticas: directivas explícitas para tutela
-        print(f"[ROUTER] Received tutela request with registraduria_role: {request.registraduria_role}")
-        print(f"[ROUTER] Type of registraduria_role: {type(request.registraduria_role)}")
-
         initial_state: Dict[str, Any] = {
             "workflow_id": workflow_id,
             "conversation_id": normalized_cid,
             "external_conversation_id": external_cid,  # optional, for UI/logs
             # Usa el texto real de la tutela como consulta base
-            "user_query": request.tutela_text,
+            "user_query": (
+                "Redacta un borrador de respuesta oficial a la accion de tutela "
+                "con base en el documento adjunto. Responde en formato legal claro "
+                "y sin comentarios adicionales."
+            ),
             "timestamp": time.time(),
             "flow_mode": "tutela_init",
             "is_first_interaction": True,
-            "pre_detected_role": request.registraduria_role,  # Propagar rol detectado desde worker
             "generation_request": {
                 "operation": "compose",
                 "goal": "draft_official_response",
@@ -263,8 +305,6 @@ async def run_tutela_full_graph(
             "generation_status": {},
         }
 
-        print(f"[ROUTER] Initial state pre_detected_role set to: {initial_state.get('pre_detected_role')}")
-
         # Execute the graph to completion (no SSE)
         print("Creating graph and executing workflow")
         logger.info("Creating graph and executing workflow")
@@ -286,23 +326,16 @@ async def run_tutela_full_graph(
 
         logger.info(" Router: About to call make_graph...")
         graph = make_graph(neo4j_driver=neo4j_driver)
-        print("Graph created successfully")
-        print("cambios")
         # Configure the graph execution with required checkpointer parameters and recursion limit
         # Raise recursion limit temporarily to aid debugging (will not loop once id is valid)
         config = {
             "configurable": {"thread_id": normalized_cid},
             "recursion_limit": 30,  # Increased temporarily for debugging
         }
-        print("About to invoke graph")
-
-        print(f"[ROUTER] Initial state keys: {list(initial_state.keys())}")
-        print(f"[ROUTER] Initial state pre_detected_role: {initial_state.get('pre_detected_role')}")
-        print(f"[ROUTER] Initial state type: {type(initial_state)}")
         logger.info("About to invoke graph")
 
         final_state: Dict[str, Any] = await graph.ainvoke(initial_state, config=config)  # type: ignore[attr-defined]
-        print("Graph execution completed")
+        
 
         #  VALIDACIÓN: Verificar que final_state no sea None
         if final_state is None:
@@ -389,6 +422,7 @@ async def run_tutela_full_graph(
 async def chat_stream(
     request: ChatStreamRequest,
     neo4j_driver=Depends(get_neo4j_driver),
+    db: Session = Depends(get_postgres_session),
 ):
     """
     Chat con streaming SSE (Server-Sent Events) para interacciones conversacionales.
@@ -448,14 +482,22 @@ async def chat_stream(
             normalized_cid, external_cid = _normalize_cid(request.conversation_id)
             safe_conversation_id = normalized_cid
 
+            _ensure_conversation(
+                db,
+                normalized_cid,
+                title="Chat",
+                metadata={
+                    "source": "generation_chat_stream",
+                    "external_conversation_id": external_cid,
+                },
+            )
+
             #  USAR EL GRAFO CORRECTAMENTE
             from app.graphs.generation_graph import make_graph
 
             graph = make_graph(neo4j_driver=neo4j_driver)
 
-            # Configurar estado inicial para chat_edit
-            # Nota: el proyecto no expone un servicio de drafts/MinIO en este módulo,
-            # así que no se consulta un "latest_draft" aquí.
+            
             draft_info = {
                 "has_draft_history": False,
                 "latest_draft": None,
@@ -1089,11 +1131,7 @@ async def chat_stream(
 
                 # Emitir evento de completado
                 #  Usar el mismo actual_goal determinado anteriormente
-                print("=" * 80)
-                print(" CONSTRUYENDO PAYLOAD FINAL")
-                print(f"   final_response antes del check: {final_response is not None}")
-                print("   Intentando acceder a final_response.get('content')...")
-
+                
                 # Validación segura para el status
                 has_content = False
                 if final_response:
@@ -1145,38 +1183,19 @@ async def chat_stream(
                     },
                 )
 
-                print("=" * 80)
-                print(" EMITIENDO EVENTO COMPLETE")
-                print(f"   Status: {payload['status']}")
-                print(f"   Conversation ID: {payload['conversation_id']}")
-                print(f"   Execution time: {payload['execution_time']:.2f}s")
-                print("=" * 80)
-                
-                print("=" * 60)
-                print("📤 EVENTO COMPLETE PARA FRONTEND:")
-                print(f"   🎨 render_mode: {payload.get('render_mode')}")
-                print(f"   📝 message_kind: {payload.get('message_kind')}")
-                print(f"   📊 response_type: {payload.get('workflow_summary', {}).get('response_type')}")
-                print(f"   🎯 goal: {payload.get('workflow_summary', {}).get('goal')}")
-                print(f"   📦 has_draft_version: {bool(payload.get('draft_version'))}")
                 if payload.get('render_mode') == 'draft_update':
-                    print("   ✅ FRONTEND DEBE: Actualizar panel del BORRADOR")
+                    print("   FRONTEND DEBE: Actualizar panel del BORRADOR")
                     if payload.get('draft_version'):
                         print(f"      version: {payload['draft_version'].get('version')}")
                 else:
-                    print("   💬 FRONTEND DEBE: Mostrar como CHAT (no tocar borrador)")
+                    print("   FRONTEND DEBE: Mostrar como CHAT (no tocar borrador)")
                 print("=" * 60)
 
                 yield "event: complete\n" + f"data: {json.dumps(payload)}\n\n"
 
-                print("=" * 80)
-                print(" STREAM COMPLETADO EXITOSAMENTE")
-                print("=" * 80)
+                
             except Exception as stream_err:
-                print("=" * 80)
-                print(" EXCEPCIÓN CAPTURADA EN STREAM")
-                print(f"   Tipo: {type(stream_err).__name__}")
-                print(f"   Mensaje: {stream_err}")
+                
                 import traceback
 
                 print("   Traceback:")
@@ -1190,10 +1209,7 @@ async def chat_stream(
                 yield "event: warn\n" + f"data: {json.dumps(warn_evt)}\n\n"
 
         except Exception as e:
-            print("=" * 80)
-            print(" EXCEPCIÓN CAPTURADA EN event_stream() PRINCIPAL")
-            print(f"   Tipo: {type(e).__name__}")
-            print(f"   Mensaje: {e}")
+            
             import traceback
 
             print("   Traceback:")

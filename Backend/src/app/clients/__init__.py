@@ -2,7 +2,7 @@
 Módulo de clientes para servicios externos.
 
 Exporta todos los clientes y funciones de gestión del ciclo de vida para
-servicios externos: Ollama, MinIO, Neo4j y PostgreSQL.
+servicios externos: Ollama, Neo4j y PostgreSQL.
 """
 
 from .neo4j_client import get_neo4j_driver, get_neo4j_session, lifespan_neo4j
