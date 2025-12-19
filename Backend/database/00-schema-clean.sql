@@ -75,7 +75,7 @@ CREATE TRIGGER trg_app_conversations_updated_at
 BEFORE UPDATE ON public.app_conversations
 FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
--- Mensajes (incluye embeddings, metadata y referencias MinIO para documentos IA)
+-- Mensajes (incluye embeddings y metadata)
 CREATE TABLE IF NOT EXISTS public.messages (
   id               uuid        PRIMARY KEY DEFAULT uuid_generate_v4(),
   conversation_id  uuid        NOT NULL REFERENCES public.app_conversations(id) ON DELETE CASCADE,
@@ -83,8 +83,6 @@ CREATE TABLE IF NOT EXISTS public.messages (
   role             public.chat_role,
   content          text,
   model            text,
-  minio_bucket     text,
-  minio_key        text,
   metadata         jsonb       NOT NULL DEFAULT '{}'::jsonb,
   embedding        vector(384),
   created_at       timestamptz NOT NULL DEFAULT now(),

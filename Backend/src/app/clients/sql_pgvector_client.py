@@ -105,6 +105,12 @@ def init_database() -> None:
     para asegurar que todas las tablas requeridas existan.
     """
     try:
+        # Ensure required extensions exist before ORM creates tables.
+        with session_scope() as session:
+            session.execute(text('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"'))
+            session.execute(text("CREATE EXTENSION IF NOT EXISTS citext"))
+            session.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+            session.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         Base.metadata.create_all(bind=engine)
         logger.info("Tablas de base de datos inicializadas exitosamente")
     except Exception as e:

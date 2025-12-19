@@ -2,7 +2,7 @@
 Punto de entrada principal de la aplicación FastAPI para Petition API.
 
 Este módulo configura y inicializa la aplicación FastAPI, gestiona el ciclo de vida
-de los clientes (PostgreSQL, Neo4j, MinIO, servicios de embeddings) y establece
+de los clientes (PostgreSQL, Neo4j, servicios de embeddings) y establece
 los manejadores de excepciones globales.
 
 Sigue el patrón recomendado de FastAPI para aplicaciones con múltiples dependencias
@@ -10,6 +10,8 @@ externas y gestión de recursos compartidos.
 """
 
 from contextlib import asynccontextmanager
+import importlib
+import importlib.util
 from typing import AsyncGenerator, Optional
 
 from fastapi import FastAPI, Request, status
@@ -19,12 +21,21 @@ from fastapi.responses import JSONResponse
 
 from app.api.v1.routers import router as api_router
 from app.api.v1.routers.core.health_router import health_check
-from app.clients.embedding_client import lifespan_embedding
-from app.clients.minio_client import lifespan_minio
 from app.clients.neo4j_client import lifespan_neo4j
 from app.clients.sql_pgvector_client import lifespan_pgvector
 from app.config.settings import Settings, get_settings
 from app.extensions import get_logger
+
+def _module_available(name: str) -> bool:
+    return importlib.util.find_spec(name) is not None
+
+
+if _module_available("app.clients.embedding_client"):
+    _emb_mod = importlib.import_module("app.clients.embedding_client")
+    lifespan_embedding = _emb_mod.lifespan_embedding
+else:
+    lifespan_embedding = None
+
 
 logger = get_logger(__name__)
 
@@ -37,8 +48,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     Inicializa los clientes en orden de dependencia:
     1. PostgreSQL + pgvector (base de datos principal)
     2. Neo4j (base de datos de grafos)
-    3. MinIO (almacenamiento de objetos)
-    4. Servicio de embeddings (modelos de embeddings)
+    3. Servicio de embeddings (modelos de embeddings)
 
     Nota: Ollama se ejecuta como servicio externo y no requiere gestión de ciclo de vida.
 
@@ -52,7 +62,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         Exception: Propaga cualquier error durante la inicialización
     """
     logger.info("Iniciando Petition API...")
-
     try:
         # Inicializar clientes en orden de dependencia (anidados para garantizar orden)
         async with lifespan_pgvector(app):
@@ -61,20 +70,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             async with lifespan_neo4j(app):
                 logger.info("Cliente Neo4j inicializado")
 
-                async with lifespan_minio(app):
-                    logger.info("Cliente MinIO inicializado")
-
+                if lifespan_embedding:
                     async with lifespan_embedding(app):
                         logger.info("Servicio de embeddings inicializado")
 
                         # Ollama se ejecuta como servicio externo independiente
-                        # No requiere gestión de ciclo de vida en esta aplicación
+                        # No requiere gestion de ciclo de vida en esta aplicacion
                         logger.info("Servicio externo Ollama configurado")
                         yield
+                else:
+                    logger.info("Servicio de embeddings no disponible; se omite inicializacion")
+                    logger.info("Servicio externo Ollama configurado")
+                    yield
 
     except Exception as e:
         logger.error(
-            f"Error durante el inicio de la aplicación: {str(e)}",
+            f"Error durante el inicio de la aplicacion: {str(e)}",
             exc_info=True,
         )
         raise
@@ -110,7 +121,9 @@ def create_app(app_settings: Optional[Settings] = None) -> FastAPI:
         está deshabilitado. Esto asegura que todas las solicitudes se
         realicen sobre conexiones seguras.
         """
-        if app_settings.FORCE_HTTPS and not app_settings.ALLOW_INSECURE_AUTH:
+        if getattr(app_settings, "FORCE_HTTPS", False) and not getattr(
+            app_settings, "ALLOW_INSECURE_AUTH", False
+        ):
             if request.url.scheme == "http":
                 https_url = request.url.replace(scheme="https")
                 return JSONResponse(
@@ -147,7 +160,9 @@ def create_app(app_settings: Optional[Settings] = None) -> FastAPI:
 
     # Verificar y registrar el estado de la autenticación
     try:
-        if not app_settings.SECRET_KEY or not app_settings.LDAP_SERVER:
+        if not getattr(app_settings, "SECRET_KEY", None) or not getattr(
+            app_settings, "LDAP_SERVER", None
+        ):
             logger.warning("Autenticación deshabilitada: faltan SECRET_KEY o " "configuración LDAP. La API iniciará con acceso anónimo " "para endpoints no protegidos.")
     except Exception:
         # La configuración puede no estar completamente inicializada; ignorar
@@ -236,3 +251,7 @@ def create_app(app_settings: Optional[Settings] = None) -> FastAPI:
 # Instancia global de la aplicación FastAPI
 # Se crea al importar el módulo y es utilizada por el servidor ASGI (uvicorn)
 app = create_app()
+
+
+
+

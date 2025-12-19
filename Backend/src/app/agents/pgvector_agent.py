@@ -27,13 +27,6 @@ class PgVectorAgent:
         self.retriever = PgVectorRetriever(settings, embedding_service)
         self.recent_messages_limit = settings.databases.postgresql.pgvector_recent_messages_limit
         self.semantic_search_limit = settings.databases.postgresql.pgvector_semantic_limit
-        self.minio_service: Optional[Any] = None
-
-    def set_minio_client(self, minio_client: Any) -> None:
-        self.minio_service = minio_client
-
-    def init_minio(self, minio_service: Any) -> None:
-        self.minio_service = minio_service
 
     async def run(self, state: Any) -> Dict[str, Any]:
         sd: Dict[str, Any] = state if isinstance(state, dict) else getattr(state, "__dict__", {}) or {}
@@ -136,4 +129,3 @@ class PgVectorAgent:
             return cid or None
         except Exception:
             return None
-

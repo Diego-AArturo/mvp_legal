@@ -38,6 +38,7 @@ services:
       DB_PASSWORD: ${DB_PASSWORD:-password123}
       DB_PORT: ${DB_PORT:-5432}
       DB_USER: ${DB_USER:-postgres}
+      POSTGRES_DSN: ${POSTGRES_DSN:-postgresql://postgres:password123@postgres_dev:5432/postgres}
       
       
       # Neo4j
@@ -168,7 +169,7 @@ services:
       - "5435:5432"  # Puerto 5435 en host, 5432 en contenedor
     volumes:
       - postgres_dev:/var/lib/postgresql/data
-      - ./database/init/00-schema-clean.sql:/docker-entrypoint-initdb.d/00-schema-clean.sql:ro
+      - ./database/00-schema-clean.sql:/docker-entrypoint-initdb.d/00-schema-clean.sql:ro
     networks:
       - legal-system-network
     

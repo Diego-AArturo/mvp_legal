@@ -1,27 +1,10 @@
 """
-Modelos SQLAlchemy para dominio de Tutelas.
-
-Define todos los modelos de base de datos para tutelas, usuarios, conversaciones,
-mensajes, asignaciones y feedback usando SQLAlchemy ORM.
+Modelos SQLAlchemy alineados con el esquema limpio de conversaciones/mensajes.
 """
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import (
-    ARRAY,
-    UUID,
-    Boolean,
-    Column,
-    Date,
-    DateTime,
-    ForeignKey,
-    Index,
-    Integer,
-    Numeric,
-    String,
-    Text,
-    text,
-)
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import UUID, Column, DateTime, ForeignKey, Index, String, Text, text
+from sqlalchemy.dialects.postgresql import CITEXT, JSONB
 from sqlalchemy.orm import DeclarativeBase, relationship
 from sqlalchemy.sql import func
 
@@ -30,59 +13,70 @@ class Base(DeclarativeBase):
     pass
 
 
-# =========================
-# ======= ENUMS ===========
-# =========================
-
-
-
 class ChatRole:
     USER = "user"
     ASSISTANT = "assistant"
     SYSTEM = "system"
 
 
-
-# =========================
-# ===== APP MODELS =======
-# =========================
-
-
-
-class ChatSession(Base):
-    __tablename__ = "app_chat_sessions"
+class AppUser(Base):
+    __tablename__ = "app_users"
 
     id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("uuid_generate_v4()"))
-    owner_user_id = Column(UUID(as_uuid=True), ForeignKey("app_users.id"), nullable=False)
-    tutela_id = Column(UUID(as_uuid=True), ForeignKey("app_tutelas.id"))
-    title = Column(String)
-    is_active = Column(Boolean, nullable=False, default=True)
-    meta_data = Column(JSONB)
-    created_at = Column(DateTime, nullable=False, default=func.now())
-    updated_at = Column(DateTime, nullable=False, default=func.now(), onupdate=func.now())
+    email = Column(CITEXT, unique=True)
+    role = Column(Text)
+    created_at = Column(DateTime, nullable=False, server_default=text("CURRENT_TIMESTAMP"))
 
-    # Relationships
-    owner_user = relationship("User", back_populates="chat_sessions")
-    tutela = relationship("Tutela", back_populates="chat_sessions")
-    messages = relationship("ChatMessage", back_populates="session")
-    document_versions = relationship("DocumentVersion", back_populates="chat_session")
-    feedback = relationship("Feedback", back_populates="chat_session")
+    conversations = relationship("Conversation", back_populates="user")
 
 
-class ChatMessage(Base):
-    __tablename__ = "app_chat_messages"
+class Conversation(Base):
+    __tablename__ = "app_conversations"
 
     id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("uuid_generate_v4()"))
-    session_id = Column(UUID(as_uuid=True), ForeignKey("app_chat_sessions.id"), nullable=False)
-    role = Column(String, nullable=False)  # chat_role enum
-    content = Column(Text, nullable=False)
-    content_embedding = Column(Vector(1024))  # pgvector
-    meta_data = Column(JSONB)
-    created_at = Column(DateTime, nullable=False, default=func.now())
+    user_id = Column(UUID(as_uuid=True), ForeignKey("app_users.id"), nullable=True)
+    title = Column(Text)
+    status = Column(Text, nullable=False, server_default=text("'open'"))
+    started_at = Column(DateTime, nullable=False, server_default=func.now())
+    updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
+    last_message_at = Column(DateTime)
+    meta_data = Column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb"))
 
-    # Relationships
-    session = relationship("ChatSession", back_populates="messages")
+    user = relationship("AppUser", back_populates="conversations")
+    messages = relationship("Message", back_populates="conversation")
 
-    # Indexes
-    __table_args__ = (Index("idx_chat_messages_session_created", "session_id", "created_at"),)
+    __table_args__ = (
+        Index("ix_app_conversations_metadata_gin", "metadata", postgresql_using="gin"),
+    )
+
+
+class Message(Base):
+    __tablename__ = "messages"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("uuid_generate_v4()"))
+    conversation_id = Column(
+        UUID(as_uuid=True), ForeignKey("app_conversations.id"), nullable=False
+    )
+    sender = Column(Text, nullable=False)
+    role = Column(Text)
+    content = Column(Text)
+    model = Column(Text)
+    meta_data = Column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    embedding = Column(Vector(384))
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+    updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
+
+    conversation = relationship("Conversation", back_populates="messages")
+
+    __table_args__ = (
+        Index("ix_messages_conversation_id_created_at", "conversation_id", "created_at"),
+        Index("ix_messages_metadata_gin", "metadata", postgresql_using="gin"),
+        Index(
+            "ix_messages_embedding_ivfflat_cosine",
+            "embedding",
+            postgresql_using="ivfflat",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+            postgresql_with={"lists": 100},
+        ),
+    )
 

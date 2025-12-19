@@ -394,7 +394,6 @@ def _attempt_emergency_persistence(state: Any) -> None:
 
 def make_graph(
     neo4j_driver=None,
-    minio_client=None,
     *,
     checkpointer: Optional[Any] = None,
 ) -> CompiledStateGraph:
@@ -642,13 +641,6 @@ def make_graph(
                 "flow_mode": getf(state, "flow_mode"),
             },
         )
-        try:
-            runtime_minio = _get_resource(config, "minio_client", None)
-            if runtime_minio is not None and hasattr(pgvector_agent, "set_minio_client"):
-                pgvector_agent.set_minio_client(runtime_minio)
-        except Exception:
-            pass
-
         # Handle pgvector_request directive from chat_stream endpoint
         req = (getf(state, "pgvector_request") or {}).copy()
 

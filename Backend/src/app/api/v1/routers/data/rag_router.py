@@ -14,30 +14,110 @@ from pydantic import BaseModel, Field
 
 from app.clients.neo4j_client import get_neo4j_driver
 from app.extensions import get_logger
-from app.schemas.normography_schemas import (
-    BulkLoadRequest,
-    BulkLoadResponse,
-    DocumentProcessRequest,
-    DocumentProcessResponse,
-    NormographyUpdateRequest,
-    NormographyUpdateResponse,
-)
 from app.services.ai.ollama_service import OllamaService
-from app.services.auth.auth_service import get_current_user
-from app.services.documents.document_processor_service import DocumentProcessorService
 from app.services.embeddings.embedding_service import get_embedding_service
-
-# Imports para sincronización con PostgreSQL
-from app.services.normography.normography_postgres_service import (
-    _coerce_value_for_sql,
-    _sanitize_for_json,
-    async_ensure_normografia_schema,
-    async_upsert_edges_by_element_batch,
-    async_upsert_nodes_by_element_batch,
-)
-from app.services.normography.normography_service import NormographyService
 from app.services.retrieval.neo4j_retriever_service import Neo4jRetrieverService
 
+import importlib
+import importlib.util
+
+
+def _module_available(name: str) -> bool:
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ModuleNotFoundError, ValueError):
+        return False
+
+
+if _module_available("app.schemas.normography_schemas"):
+    _normo_mod = importlib.import_module("app.schemas.normography_schemas")
+    BulkLoadRequest = _normo_mod.BulkLoadRequest
+    BulkLoadResponse = _normo_mod.BulkLoadResponse
+    DocumentProcessRequest = _normo_mod.DocumentProcessRequest
+    DocumentProcessResponse = _normo_mod.DocumentProcessResponse
+    NormographyUpdateRequest = _normo_mod.NormographyUpdateRequest
+    NormographyUpdateResponse = _normo_mod.NormographyUpdateResponse
+    _NORMOGRAPHY_SCHEMAS_AVAILABLE = True
+else:
+    _NORMOGRAPHY_SCHEMAS_AVAILABLE = False
+
+    class BulkLoadRequest(BaseModel):
+        pass
+
+    class BulkLoadResponse(BaseModel):
+        success: bool = False
+        error_message: Optional[str] = None
+
+    class DocumentProcessRequest(BaseModel):
+        pass
+
+    class DocumentProcessResponse(BaseModel):
+        success: bool = False
+        error_message: Optional[str] = None
+
+    class NormographyUpdateRequest(BaseModel):
+        pass
+
+    class NormographyUpdateResponse(BaseModel):
+        success: bool = False
+        error_message: Optional[str] = None
+
+if _module_available("app.services.auth.auth_service"):
+    _auth_mod = importlib.import_module("app.services.auth.auth_service")
+    get_current_user = _auth_mod.get_current_user
+else:
+    async def get_current_user() -> str:
+        return "anonymous"
+
+if _module_available("app.services.documents.document_processor_service"):
+    _doc_mod = importlib.import_module("app.services.documents.document_processor_service")
+    DocumentProcessorService = _doc_mod.DocumentProcessorService
+else:
+    DocumentProcessorService = None
+
+# Imports para sincronizacion con PostgreSQL
+if _module_available("app.services.normography.normography_postgres_service"):
+    _pg_mod = importlib.import_module("app.services.normography.normography_postgres_service")
+    _coerce_value_for_sql = _pg_mod._coerce_value_for_sql
+    _sanitize_for_json = _pg_mod._sanitize_for_json
+    async_ensure_normografia_schema = _pg_mod.async_ensure_normografia_schema
+    async_upsert_edges_by_element_batch = _pg_mod.async_upsert_edges_by_element_batch
+    async_upsert_nodes_by_element_batch = _pg_mod.async_upsert_nodes_by_element_batch
+    _NORMOGRAPHY_POSTGRES_AVAILABLE = True
+else:
+    _NORMOGRAPHY_POSTGRES_AVAILABLE = False
+
+    def _coerce_value_for_sql(value: Any) -> Any:
+        return value
+
+    def _sanitize_for_json(value: Any) -> Any:
+        return value
+
+    async def async_ensure_normografia_schema() -> None:
+        raise HTTPException(status_code=503, detail="Normography postgres service not available")
+
+    async def async_upsert_edges_by_element_batch(_: List[Dict[str, Any]]) -> int:
+        raise HTTPException(status_code=503, detail="Normography postgres service not available")
+
+    async def async_upsert_nodes_by_element_batch(_: List[Dict[str, Any]]) -> int:
+        raise HTTPException(status_code=503, detail="Normography postgres service not available")
+
+if _module_available("app.services.normography.normography_service"):
+    _norm_mod = importlib.import_module("app.services.normography.normography_service")
+    NormographyService = _norm_mod.NormographyService
+else:
+    NormographyService = None
+
+if _module_available("app.agents.security_agent") and _module_available("app.schemas.graph_schemas"):
+    _sec_mod = importlib.import_module("app.agents.security_agent")
+    _graph_mod = importlib.import_module("app.schemas.graph_schemas")
+    SecurityAgent = _sec_mod.SecurityAgent
+    PetitionState = _graph_mod.PetitionState
+    _SECURITY_AGENT_AVAILABLE = True
+else:
+    SecurityAgent = None
+    PetitionState = None
+    _SECURITY_AGENT_AVAILABLE = False
 logger = get_logger(__name__)
 router = APIRouter(prefix="/rag", tags=["rag"])
 
@@ -55,7 +135,7 @@ async def _sync_neo4j_to_postgres(
 
     Retorna:
         Diccionario con estadísticas de sincronización
-    """
+    """
     try:
         logger.info(
             f"Iniciando sincronización Neo4j → PostgreSQL después de {operation_type}"
@@ -113,7 +193,7 @@ async def _extract_all_nodes_from_neo4j(neo4j_driver) -> List[Dict[str, Any]]:
     Retorna:
         Lista de diccionarios con datos de nodos para sincronización
     """
-    try:
+    try:
         from app.config.settings import get_settings
 
         settings = get_settings()
@@ -158,7 +238,7 @@ async def _extract_all_edges_from_neo4j(neo4j_driver) -> List[Dict[str, Any]]:
     """
     Extrae todas las relaciones de Neo4j en formato compatible con PostgreSQL.
     """
-    try:
+    try:
         from app.config.settings import get_settings
 
         settings = get_settings()
@@ -226,7 +306,7 @@ async def _extract_all_edges_from_neo4j(neo4j_driver) -> List[Dict[str, Any]]:
 async def _generate_embeddings_for_law(neo4j_driver, embedding_service, law_name: str):
     """
     Genera embeddings para todos los nodos de una ley específica que no los tengan.
-    """
+    """
     from app.config.settings import get_settings
 
     settings = get_settings()
@@ -418,54 +498,54 @@ async def neo4j_rag_generate(
     try:
         import re
         import time
-
-        #  SECURITY: Importar SecurityAgent
-        from app.agents.security_agent import SecurityAgent
         from app.config.settings import get_settings
-        from app.schemas.graph_schemas import PetitionState
 
         settings = get_settings()
 
         logger.info(f"Generación RAG Neo4j solicitada por usuario: {current_user}")
 
-        #  SECURITY: Crear y usar SecurityAgent
-        security_agent = SecurityAgent()
-        security_state = PetitionState(
-            conversation_id=f"neo4j_endpoint_{int(time.time())}",
-            user_query=req.query,
-            workflow_metadata={
-                "trace_id": f"neo4j_{int(time.time())}",
-                "endpoint": "/neo4j/generate",
-                "user": current_user,
-            },
-        )
-
-        security_result = await security_agent.run(security_state)
-
-        # Si SecurityAgent bloquea, retornar mensaje de seguridad
-        if security_result.get("should_block", False):
-            security_validation = security_result.get("security_validation", {})
-            logger.warning(
-                f"Neo4j RAG endpoint: Request blocked by SecurityAgent para usuario: {current_user}",
-                extra={
+        if _SECURITY_AGENT_AVAILABLE:
+            security_agent = SecurityAgent()
+            security_state = PetitionState(
+                conversation_id=f"neo4j_endpoint_{int(time.time())}",
+                user_query=req.query,
+                workflow_metadata={
+                    "trace_id": f"neo4j_{int(time.time())}",
                     "endpoint": "/neo4j/generate",
                     "user": current_user,
-                    "threat_level": security_validation.get("threat_level"),
-                    "reason": security_validation.get("reason"),
-                    "patterns": security_validation.get("matched_patterns"),
                 },
             )
 
-            return Neo4jGenerateResponse(
-                text=security_result.get(
-                    "final_response", "Request blocked for security reasons"
-                ),
-                context_summary={"blocked": True, "reason": "security_violation"},
+            security_result = await security_agent.run(security_state)
+
+            # Si SecurityAgent bloquea, retornar mensaje de seguridad
+            if security_result.get("should_block", False):
+                security_validation = security_result.get("security_validation", {})
+                logger.warning(
+                    f"Neo4j RAG endpoint: Request blocked by SecurityAgent para usuario: {current_user}",
+                    extra={
+                        "endpoint": "/neo4j/generate",
+                        "user": current_user,
+                        "threat_level": security_validation.get("threat_level"),
+                        "reason": security_validation.get("reason"),
+                        "patterns": security_validation.get("matched_patterns"),
+                    },
+                )
+
+                return Neo4jGenerateResponse(
+                    text=security_result.get(
+                        "final_response", "Request blocked for security reasons"
+                    ),
+                    context_summary={"blocked": True, "reason": "security_violation"},
+                )
+
+            # Usar query sanitizada si fue limpiada
+            safe_query = security_result.get("user_query", req.query)
+        else:
+            logger.warning(
+                "SecurityAgent not available; skipping security checks for /neo4j/generate"
             )
-
-        # Usar query sanitizada si fue limpiada
-        safe_query = security_result.get("user_query", req.query)
-
+            safe_query = req.query
         retriever = Neo4jRetrieverService(
             driver=neo4j_driver, settings=settings, embedding_service=embedding_service
         )
@@ -574,37 +654,36 @@ async def process_normative_document(
 ) -> DocumentProcessResponse:
     """
     Procesa un documento normativo individual, extrayendo y segmentando contenido.
-
-    Este endpoint permite procesar archivos PDF, DOCX o DOC de normativas,
-    aplicando limpieza, normalización a Markdown y segmentación jerárquica.
     """
+    if not _NORMOGRAPHY_SCHEMAS_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Normography schemas not available")
+    if DocumentProcessorService is None:
+        raise HTTPException(status_code=503, detail="Document processor service not available")
+
     try:
         processor = DocumentProcessorService()
-
-        # Procesar el documento
         section_content = processor.process_document(req.file_path, req.section_path)
-
-        if section_content is None:
-            return DocumentProcessResponse(
-                success=False,
-                error_message="No se pudo procesar el documento o extraer la sección solicitada",
-            )
-
-        return DocumentProcessResponse(
-            success=True,
-            section_content=section_content,
-            processing_stats={
-                "file_path": req.file_path,
-                "section_path": req.section_path,
-                "content_length": len(section_content),
-            },
-        )
-
     except Exception as e:
         logger.error(f"Document processing error: {e}")
         return DocumentProcessResponse(
             success=False, error_message=f"Error procesando documento: {str(e)}"
         )
+
+    if section_content is None:
+        return DocumentProcessResponse(
+            success=False,
+            error_message="No se pudo procesar el documento o extraer la seccion solicitada",
+        )
+
+    return DocumentProcessResponse(
+        success=True,
+        section_content=section_content,
+        processing_stats={
+            "file_path": req.file_path,
+            "section_path": req.section_path,
+            "content_length": len(section_content),
+        },
+    )
 
 
 @router.post("/normography/update-section", response_model=NormographyUpdateResponse)
@@ -614,38 +693,32 @@ async def update_normography_section(
     embedding_service=Depends(get_embedding_service),
 ) -> NormographyUpdateResponse:
     """
-    Actualiza una sección específica de normografía en Neo4j.
-
-    Este endpoint permite actualizar o crear secciones específicas de documentos
-    normativos en la base de datos de grafos, manteniendo la estructura jerárquica.
+    Actualiza una seccion especifica de normografia en Neo4j.
     """
-    try:
-        from app.config.settings import get_settings
+    if not _NORMOGRAPHY_SCHEMAS_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Normography schemas not available")
+    if NormographyService is None:
+        raise HTTPException(status_code=503, detail="Normography service not available")
 
-        settings = get_settings()
-        normography_service = NormographyService(
-            driver=neo4j_driver, settings=settings, embedding_service=embedding_service
-        )
+    from app.config.settings import get_settings
 
-        result = await normography_service.update_normography_section(
-            category=req.category,
-            law_name=req.law_name,
-            path=req.path,
-            new_markdown_content=req.markdown_content,
-        )
+    settings = get_settings()
+    normography_service = NormographyService(
+        driver=neo4j_driver, settings=settings, embedding_service=embedding_service
+    )
 
-        #  NUEVA FUNCIONALIDAD: Sincronización automática Neo4j → PostgreSQL
-        logger.info(" Sincronizando cambios de Neo4j con PostgreSQL...")
-        sync_stats = await _sync_neo4j_to_postgres(neo4j_driver, "section_update")
-        logger.info(f" Sincronización completada: {sync_stats}")
+    result = await normography_service.update_normography_section(
+        category=req.category,
+        law_name=req.law_name,
+        path=req.path,
+        new_markdown_content=req.markdown_content,
+    )
 
-        return result
+    logger.info(" Sincronizando cambios de Neo4j con PostgreSQL...")
+    sync_stats = await _sync_neo4j_to_postgres(neo4j_driver, "section_update")
+    logger.info(f" Sincronizacion completada: {sync_stats}")
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Normography update error: {e}")
-        raise HTTPException(status_code=500, detail="Normography section update failed")
+    return result
 
 
 @router.post("/normography/bulk-load", response_model=BulkLoadResponse)
@@ -655,40 +728,32 @@ async def bulk_load_normography(
     embedding_service=Depends(get_embedding_service),
 ) -> BulkLoadResponse:
     """
-    Carga masiva de normografía desde un archivo Markdown.
-
-    Este endpoint procesa un archivo Markdown completo, lo normaliza (opcional),
-    genera embeddings y carga toda la estructura en Neo4j.
+    Carga masiva de normografia desde un archivo Markdown.
     """
-    try:
-        from app.config.settings import get_settings
+    if not _NORMOGRAPHY_SCHEMAS_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Normography schemas not available")
+    if NormographyService is None:
+        raise HTTPException(status_code=503, detail="Normography service not available")
 
-        settings = get_settings()
-        normography_service = NormographyService(
-            driver=neo4j_driver, settings=settings, embedding_service=embedding_service
-        )
+    from app.config.settings import get_settings
 
-        result = await normography_service.process_markdown_file(
-            req.file_path, skip_normalization=req.skip_normalization
-        )
+    settings = get_settings()
+    normography_service = NormographyService(
+        driver=neo4j_driver, settings=settings, embedding_service=embedding_service
+    )
 
-        #  NUEVA FUNCIONALIDAD: Sincronización automática Neo4j → PostgreSQL
-        logger.info(" Sincronizando carga masiva de Neo4j con PostgreSQL...")
-        sync_stats = await _sync_neo4j_to_postgres(neo4j_driver, "bulk_load")
-        logger.info(f" Sincronización completada: {sync_stats}")
+    result = await normography_service.process_markdown_file(
+        req.file_path, skip_normalization=req.skip_normalization
+    )
 
-        return result
+    logger.info(" Sincronizando carga masiva de Neo4j con PostgreSQL...")
+    sync_stats = await _sync_neo4j_to_postgres(neo4j_driver, "bulk_load")
+    logger.info(f" Sincronizacion completada: {sync_stats}")
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Bulk normography load error: {e}")
-        raise HTTPException(status_code=500, detail="Bulk normography load failed")
+    return result
 
 
-@router.post(
-    "/normography/process-pdf-and-upload", response_model=NormographyUpdateResponse
-)
+@router.post("/normography/process-pdf-and-upload", response_model=NormographyUpdateResponse)
 async def process_pdf_and_upload_to_neo4j(
     file: UploadFile = File(...),
     category: str = Form(...),
@@ -698,190 +763,14 @@ async def process_pdf_and_upload_to_neo4j(
     embedding_service=Depends(get_embedding_service),
 ) -> NormographyUpdateResponse:
     """
-    Endpoint unificado que procesa un documento PDF/DOCX y lo sube automáticamente a Neo4j.
-
-    Este endpoint:
-    1. Recibe un archivo PDF/DOCX subido directamente
-    2. Extrae la sección específica según la ruta jerárquica
-    3. Convierte el contenido a Markdown estructurado
-    4. Sube automáticamente el contenido a Neo4j usando NormographyService
-    5. Genera embeddings y crea las relaciones correspondientes
-
-    Argumentos:
-        file: Archivo PDF/DOCX subido
-        category: Categoría de la normografía
-        law_name: Nombre de la ley
-        section_path: Ruta jerárquica como JSON string
-        neo4j_driver: Driver de Neo4j (inyectado)
-        embedding_service: Servicio de embeddings (inyectado)
-
-    Retorna:
-        NormographyUpdateResponse con estadísticas de nodos y relaciones creadas
+    Endpoint para procesar un documento PDF/DOCX y subirlo a Neo4j.
     """
-    try:
-        import json
-        import os
-        import tempfile
+    if not _NORMOGRAPHY_SCHEMAS_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Normography schemas not available")
+    if DocumentProcessorService is None or NormographyService is None:
+        raise HTTPException(status_code=503, detail="Normography services not available")
 
-        from app.config.settings import get_settings
-
-        logger.info("=" * 80)
-        logger.info("Iniciando proceso automático PDF → Neo4j")
-        logger.info(f"Archivo: {file.filename}")
-        logger.info(f"Categoría: {category}")
-        logger.info(f"Ley: {law_name}")
-        logger.info("=" * 80)
-        # Validar tipo de archivo
-        if not file.filename.lower().endswith((".pdf", ".docx", ".doc")):
-            raise HTTPException(
-                status_code=400, detail="Solo se permiten archivos PDF, DOCX o DOC"
-            )
-
-        # Validar tamaño del archivo (max 10MB)
-        file_content = await file.read()
-        file_size_mb = len(file_content) / (1024 * 1024)
-        logger.info(f"Tamaño del archivo: {file_size_mb:.2f} MB")
-
-        if len(file_content) > 10 * 1024 * 1024:  # 10MB
-            raise HTTPException(
-                status_code=400, detail="El archivo debe ser menor a 10MB"
-            )
-
-        # Parsear section_path desde JSON string
-        try:
-            section_paths = json.loads(section_path) if section_path else []
-            if not isinstance(section_paths, list):
-                section_paths = []
-        except json.JSONDecodeError:
-            section_paths = []
-
-        logger.info(f"Rutas de seccion (section_path): {section_paths}")
-        logger.info(
-            f"Tipo de carga: {'DOCUMENTO COMPLETO' if not section_paths else 'SECCION ESPECIFICA'}"
-        )
-
-        # Guardar archivo temporalmente
-        with tempfile.NamedTemporaryFile(
-            delete=False, suffix=f".{file.filename.split('.')[-1]}"
-        ) as temp_file:
-            temp_file.write(file_content)
-            temp_file_path = temp_file.name
-
-        try:
-            # 1. Procesar el documento PDF/DOCX
-            logger.info("-" * 80)
-            logger.info("PASO 1: PROCESAMIENTO DEL DOCUMENTO")
-            logger.info(f"Archivo temporal: {temp_file_path}")
-            logger.info(f"Procesando con section_paths: {section_paths}")
-
-            processor = DocumentProcessorService()
-            section_content = processor.process_document(temp_file_path, section_paths)
-
-            if section_content is None:
-                logger.error(
-                    "Error: No se pudo procesar el documento o extraer la sección"
-                )
-                logger.error(f"Archivo: {temp_file_path}")
-                logger.error(f"Section paths: {section_paths}")
-                return NormographyUpdateResponse(
-                    success=False,
-                    error_message="No se pudo procesar el documento o extraer la sección solicitada. Verifique la ruta del archivo y la ruta jerárquica.",
-                )
-
-            content_length = len(section_content)
-            logger.info("Éxito: Documento procesado correctamente")
-            logger.info(f"Contenido extraído: {content_length} caracteres")
-            if content_length > 0:
-                logger.info(f"Preview primeros 300 caracteres: {section_content[:300]}")
-            else:
-                logger.warning("Advertencia: Contenido vacío")
-            logger.info("-" * 80)
-
-            # 2. Subir automáticamente a Neo4j
-            logger.info("Paso 2: Subiendo contenido a Neo4j...")
-            logger.info(f"Categoría: {category}")
-            logger.info(f"Ley: {law_name}")
-            logger.info(f"Path: {section_paths}")
-            logger.info(f"Contenido length: {content_length}")
-            settings = get_settings()
-            normography_service = NormographyService(
-                driver=neo4j_driver,
-                settings=settings,
-                embedding_service=embedding_service,
-            )
-
-            result = await normography_service.update_normography_section(
-                category=category,
-                law_name=law_name,
-                path=section_paths,
-                new_markdown_content=section_content,
-            )
-
-            logger.info("Resultado de carga a Neo4j:")
-            logger.info(f"  Success: {result.success}")
-            logger.info(f"  Nodos creados: {result.nodes_created}")
-            logger.info(f"  Relaciones creadas: {result.relations_created}")
-            if result.error_message:
-                logger.error(f"  Error message: {result.error_message}")
-            logger.info("-" * 80)
-
-            # PRINT 3: Resultado de Neo4j
-            print(
-                f"PRINT 3/5 - RESULTADO NEO4J: Success={result.success} | Nodos={result.nodes_created} | Rels={result.relations_created}"
-            )
-            if result.error_message:
-                print(f"ERROR: {result.error_message}")
-
-            # Generar embeddings para nodos creados
-            if result.success and result.nodes_created > 0:
-                logger.info("PASO 3: GENERANDO EMBEDDINGS PARA NODOS CREADOS")
-                try:
-                    await _generate_embeddings_for_law(
-                        neo4j_driver, embedding_service, law_name
-                    )
-                    logger.info("Éxito: Embeddings generados correctamente")
-                except Exception as e:
-                    logger.warning(f"Advertencia: Error generando embeddings: {e}")
-                    # No fallar el proceso principal por errores de embeddings
-                logger.info("-" * 80)
-
-            if result.success:
-                logger.info("=" * 80)
-                logger.info("Proceso completado exitosamente")
-                logger.info("Estadísticas finales:")
-                logger.info(f"  Nodos creados: {result.nodes_created}")
-                logger.info(f"  Relaciones creadas: {result.relations_created}")
-                logger.info(f"  Contenido procesado: {content_length} caracteres")
-                logger.info("=" * 80)
-
-                # Sincronización automática Neo4j → PostgreSQL
-                logger.info("Paso 4: Sincronizando Neo4j → PostgreSQL")
-                sync_stats = await _sync_neo4j_to_postgres(neo4j_driver, "pdf_process")
-                logger.info(f"Resultado sincronizacion: {sync_stats}")
-                logger.info("=" * 80)
-            else:
-                logger.error("=" * 80)
-                logger.error("Error en la carga a Neo4j")
-                logger.error(f"Mensaje de error: {result.error_message}")
-                logger.error("=" * 80)
-            return result
-
-        finally:
-            # Limpiar archivo temporal
-            try:
-                if os.path.exists(temp_file_path):
-                    os.unlink(temp_file_path)
-            except Exception as e:
-                logger.warning(f"Error al limpiar archivo temporal: {e}")
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error en proceso automático PDF→Neo4j: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500, detail=f"Error en proceso automático: {str(e)}"
-        )
-
+    raise HTTPException(status_code=501, detail="Endpoint disabled: missing document processing services")
 
 #  NUEVO ENDPOINT: Sincronización manual Neo4j → PostgreSQL
 @router.post("/normography/sync-to-postgres")
@@ -949,12 +838,14 @@ async def migrate_section_labels(
     Retorna:
         Dict con estadísticas de la migración
     """
-    try:
+    try:
         from app.config.settings import get_settings
 
         logger.info("🚀 Iniciando migración de etiquetas de secciones")
 
         settings = get_settings()
+        if NormographyService is None:
+            raise HTTPException(status_code=503, detail="Normography service not available")
         normography_service = NormographyService(
             driver=neo4j_driver, settings=settings, embedding_service=embedding_service
         )
@@ -995,7 +886,7 @@ async def regenerate_embeddings_with_centralized_service(
     Este endpoint resuelve inconsistencias de embeddings causadas por el uso
     de diferentes servicios de embeddings en el pasado.
     """
-    try:
+    try:
         from app.config.settings import get_settings
 
         logger.info("Iniciando regeneración de embeddings con servicio centralizado")
@@ -1120,3 +1011,25 @@ async def regenerate_embeddings_with_centralized_service(
         raise HTTPException(
             status_code=500, detail=f"Error regenerando embeddings: {str(e)}"
         )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -216,7 +216,6 @@ class OrchestratorAgent:
         self.knowledge_extractor = knowledge_extractor
 
         self._neo4j_driver = getattr(neo4j_agent, "driver", None) if neo4j_agent else None
-        self._pgvector_has_minio = bool(getattr(pgvector_agent, "minio_service", None)) if pgvector_agent else False
 
         self.security_service = SecurityService()
         self.ollama_service = OllamaService(settings)
@@ -650,20 +649,19 @@ class OrchestratorAgent:
                 "current_trace_id": trace_id,
                 "flow_mode": flow_mode,
                 "policy_source": "explicit_directives",
-                "pgvector_minio_enabled": self._pgvector_has_minio,
                 "neo4j_driver_present": bool(self._neo4j_driver),
                 "context_sources_planned": [s for s, need in (("pgvector", use_vector), ("neo4j", use_graph)) if need],
             }
         )
 
-        # Signal that text-only init is allowed (no MinIO document required)
+        # Signal that text-only init is allowed (no external document required)
         if flow_mode == "tutela_init":
             has_inline_text = bool(_get_in_dict(state, "conversation_context.initial_petition") or state.get("user_query"))
             wf_meta.setdefault("policy_flags", {})
             wf_meta["policy_flags"].update(
                 {
                     "allow_text_only_init": has_inline_text,
-                    "require_minio_document": False,
+                    "require_source_document": False,
                 }
             )
 
@@ -1657,12 +1655,12 @@ Clasifica como EDIT o CHAT."""
             "cite_format": "footnote_like",
         }
         if flow_mode == "tutela_init":
-            # Allow initial flow to work with inline text only (no MinIO document).
+            # Allow initial flow to work with inline text only (no external document).
             base.update(
                 {
                     "require_all_sections": True,
                     "allow_text_only_init": True,
-                    "require_minio_document": False,
+                    "require_source_document": False,
                 }
             )
         else:
