@@ -114,6 +114,14 @@ class EmbeddingService:
                     **self.settings.embedding_model_kwargs,
                 }
 
+                # Respetar modo offline si está configurado en el entorno
+                offline_env = str(os.getenv("HF_HUB_OFFLINE", "")).strip().lower()
+                if offline_env in {"1", "true", "yes"}:
+                    model_kwargs["local_files_only"] = True
+                    logger.warning(
+                        "HF_HUB_OFFLINE activo: solo se usarán archivos locales para embeddings"
+                    )
+
                 # Agregar directorio de caché si está especificado
                 if self.settings.embedding_cache_dir:
                     model_kwargs["cache_folder"] = self.settings.embedding_cache_dir

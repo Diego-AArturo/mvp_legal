@@ -552,6 +552,10 @@ def make_graph(
                 )
 
             try:
+                original_ctx = getf(state, "conversation_context", {}) or {}
+                if not isinstance(original_ctx, dict):
+                    original_ctx = dict(original_ctx)
+
                 # Usar _do_retrieve que es el método disponible
                 conversation_context, document_results = await pgvector_agent._do_retrieve(
                     conversation_id=getf(state, "conversation_id", ""),
@@ -567,7 +571,13 @@ def make_graph(
 
                 # Update state with results
                 state = setf(state, "vector_results", [r.model_dump() for r in combined_results])
-                state = setf(state, "conversation_context", conversation_context)
+                merged_ctx = conversation_context or {}
+                if not isinstance(merged_ctx, dict):
+                    merged_ctx = dict(merged_ctx)
+                for key in ("latest_draft", "latest_draft_id", "draft_count", "has_draft_history"):
+                    if original_ctx.get(key) and not merged_ctx.get(key):
+                        merged_ctx[key] = original_ctx[key]
+                state = setf(state, "conversation_context", merged_ctx)
 
                 #  CRÍTICO: Limpiar pgvector_request para evitar bucles infinitos
                 state = setf(state, "pgvector_request", None)
@@ -941,7 +951,7 @@ def make_graph(
                         result_state = setf(result_state, "workflow_metadata", workflow_metadata)
 
             except Exception as e:
-                logger.error(
+                logger.exception(
                     " _generation_node: Error during persistence",
                     extra={
                         "conversation_id": conversation_id,
@@ -1348,44 +1358,7 @@ def make_graph(
                 flags["use_graph_analysis"] = False
                 flags["use_vector_search"] = False
             else:
-                #  COMENTADO: Lógica de detección de tutela movida al orchestrator para evitar sobrescritura de flags
-                # El orchestrator ahora maneja toda la detección y planificación de manera centralizada
-
-                # CÓDIGO ORIGINAL COMENTADO (mantener para referencia):
-                # # Para flujo de tutela, por defecto necesitamos contexto
-                # flow_mode = getf(state, "flow_mode", "")
-                # generation_request = getf(state, "generation_request", {}) or {}
-                #
-                # print(f" FLOW DETECTION DEBUG:")
-                # print(f"   flow_mode: '{flow_mode}'")
-                # print(f"   generation_request: {generation_request}")
-                # print(f"   generation_request.operation: '{generation_request.get('operation', '')}'")
-                # print(f"   tutela in flow_mode: {'tutela' in str(flow_mode).lower()}")
-                # print(f"   tutela in operation: {'tutela' in str(generation_request.get('operation', '')).lower()}")
-                #
-                # #  MEJORAR DETECCIÓN: Buscar más indicadores de tutela
-                # is_tutela_flow = (
-                #     "tutela" in str(flow_mode).lower() or
-                #     "tutela" in str(generation_request.get("operation", "")).lower() or
-                #     "tutela" in str(generation_request.get("goal", "")).lower() or
-                #     generation_request.get("plan", {}).get("use_neo4j_context", False) or
-                #     generation_request.get("plan", {}).get("use_conversation_memory", False)
-                # )
-                #
-                # print(f"   FINAL is_tutela_flow: {is_tutela_flow}")
-                #
-                # if is_tutela_flow:
-                #     print(f" TUTELA FLOW DETECTED - Setting use_graph_analysis=True, use_vector_search=True")
-                #     flags["direct_generation"] = False
-                #     flags["use_graph_analysis"] = True
-                #     flags["use_vector_search"] = True
-                # else:
-                #     print(f" NON-TUTELA FLOW - Setting direct_generation=True")
-                #     flags["direct_generation"] = True
-                #     flags["use_graph_analysis"] = False
-                #     flags["use_vector_search"] = False
-                #     print(f" FLAGS AFTER NON-TUTELA: direct_gen={flags['direct_generation']}, use_vec={flags['use_vector_search']}, use_graph={flags['use_graph_analysis']}")
-
+                
                 logger.debug("GRAFO: Respetando flags del orchestrator - no sobrescribiendo decisiones")
 
         logger.info(
@@ -1401,20 +1374,7 @@ def make_graph(
                 "has_final_response": bool(getf(state, "final_response")),
             },
         )
-        #  TEMPORALMENTE DESHABILITADO: Persistencia que causa bucle infinito
-        #  Priorizar persistencia si hay pgvector_request pendiente
-        # pgvector_request = getf(state, "pgvector_request", None)
-        # if pgvector_request and pgvector_request.get("action") == "persist":
-        #     logger.info(
-        #         " ROUTING: persist request -> pgvector",
-        #         extra={
-        #             "conversation_id": conversation_id,
-        #             "trace_id": trace_id,
-        #             "pgvector_request": pgvector_request,
-        #         }
-        #     )
-        #     return TR_TO_PGV
-
+        
         final_response = getf(state, "final_response", None)
         if final_response:
             logger.info(
@@ -1510,7 +1470,6 @@ def make_graph(
             )
             return TR_TO_GEN
 
-        #  MEJORAR: Considerar errores de pgvector en el routing
         pgvector_failed = False
         pgvector_status = getf(state, "pgvector_retrieval_status", {}) or {}
         if isinstance(pgvector_status, dict):
@@ -1636,12 +1595,6 @@ def make_graph(
         conversation_id = getf(state, "conversation_id", "unknown")
         trace_id = getf(state, "workflow_metadata", {}).get("trace_id", "unknown")
 
-        #  TEMPORALMENTE DESHABILITADO: Persistencia que causa bucle infinito
-        #  Priorizar persistencia pendiente antes de terminar
-        # pgvector_request = getf(state, "pgvector_request", None)
-        # if pgvector_request and pgvector_request.get("action") == "persist":
-        #     logger.debug("Finalize router: persist request pending -> orchestrator")
-        #     return "orchestrator"
 
         logger.debug("_route_after_finalize: Skipping persistence step to avoid infinite loop")
 
@@ -1761,6 +1714,7 @@ def make_graph(
 
     logger.info(" Graph factory: returning compiled workflow")
     return compiled
+
 
 
 

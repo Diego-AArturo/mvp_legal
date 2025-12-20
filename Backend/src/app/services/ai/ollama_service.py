@@ -145,7 +145,7 @@ class OllamaService:
             requested_max_tokens = (
                 max_tokens or self.generation_settings.generation_max_response_length
             )
-            temperature = temperature if temperature is not None else 0.3
+            temperature = temperature if temperature is not None else 0.1
 
             #  VALIDACIÓN AUTOMÁTICA: Ajustar max_tokens para respetar ventana de contexto
             safe_max_tokens = self._calculate_safe_max_tokens(
@@ -239,7 +239,9 @@ class OllamaService:
 
         parts.append(
             "REGLA FINAL: Responde solo con el contenido final solicitado. "
-            "No repitas instrucciones ni el texto del prompt."
+            "No repitas instrucciones ni el texto del prompt. "
+            "Idioma obligatorio: espanol. No uses ingles. "
+            "No uses HTML ni etiquetas."
         )
 
         merged = "\n\n".join(parts).strip()

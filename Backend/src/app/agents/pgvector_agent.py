@@ -166,11 +166,20 @@ class PgVectorAgent:
         content = (message.get("content") or message.get("text") or "").strip()
         if not content:
             return {"success": False, "error": "empty_content"}
-        # asegurar conversación existe
+        metadata = message.get("metadata") or {}
+        kind = message.get("kind")
+        if kind is not None and "kind" not in metadata:
+            metadata = {**metadata, "kind": kind}
+        # asegurar conversaci�n existe
         exists = await self.retriever._check_conversation_exists(conversation_id)
         if not exists:
             await self.retriever._create_conversation(conversation_id)
-        msg_id = await self.retriever._add_message_to_conversation(conversation_id, content, role=role)
+        msg_id = await self.retriever._add_message_to_conversation(
+            conversation_id,
+            content,
+            role=role,
+            metadata=metadata,
+        )
         return {
             "success": True,
             "message_id": msg_id,
@@ -178,6 +187,23 @@ class PgVectorAgent:
             "kind": message.get("kind"),
             "created_at": time.time(),
         }
+    async def _persist_from_state(self, conversation_id: str, message: Dict[str, Any]) -> Dict[str, Any]:
+        if not message:
+            return {"success": False, "error": "empty_message"}
+        normalized_cid = self._normalize_conversation_id(conversation_id)
+        if not normalized_cid:
+            return {"success": False, "error": "invalid_conversation_id"}
+        payload = {
+            "role": message.get("role") or message.get("sender") or "user",
+            "content": message.get("content") or message.get("text") or "",
+            "kind": message.get("kind"),
+            "metadata": message.get("metadata") or {},
+        }        
+        result = await self._persist_message(normalized_cid, payload)
+        if isinstance(result, dict):
+            result.setdefault("kind", payload.get("kind"))
+            result.setdefault("version", message.get("version"))
+        return result
 
     def _normalize_conversation_id(self, conversation_id: Optional[str]) -> Optional[str]:
         try:
@@ -185,3 +211,4 @@ class PgVectorAgent:
             return cid or None
         except Exception:
             return None
+

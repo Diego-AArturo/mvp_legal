@@ -137,6 +137,29 @@ def _ensure_conversation(
     db.commit()
 
 
+def _fetch_latest_draft(db: Session, conversation_id: str) -> Optional[Dict[str, Any]]:
+    stmt = text(
+        """
+        SELECT id, content, metadata, created_at
+        FROM messages
+        WHERE conversation_id = :cid
+          AND sender = 'assistant'
+          AND (metadata->>'kind') IN ('initial_draft', 'revision')
+        ORDER BY created_at DESC
+        LIMIT 1
+        """
+    )
+    row = db.execute(stmt, {"cid": conversation_id}).mappings().first()
+    if not row:
+        return None
+    return {
+        "id": str(row.get("id")),
+        "content": row.get("content") or "",
+        "metadata": row.get("metadata") or {},
+        "created_at": str(row.get("created_at")),
+    }
+
+
 # =========================
 # Request/Response Models
 # =========================
@@ -497,12 +520,12 @@ async def chat_stream(
 
             graph = make_graph(neo4j_driver=neo4j_driver)
 
-            
+            latest_draft = _fetch_latest_draft(db, normalized_cid)
             draft_info = {
-                "has_draft_history": False,
-                "latest_draft": None,
-                "draft_count": 0,
-                "latest_draft_id": None,
+                "has_draft_history": bool(latest_draft),
+                "latest_draft": latest_draft,
+                "draft_count": 1 if latest_draft else 0,
+                "latest_draft_id": latest_draft.get("id") if latest_draft else None,
                 "conversation_metrics": {},
             }
 
@@ -1098,7 +1121,7 @@ async def chat_stream(
                     print("   💬 FRONTEND: Debe mostrar como mensaje de CHAT")
                 print("=" * 60)
                 
-                if pgvector_write_status.get("success") and pgvector_write_status.get("version"):
+                if pgvector_write_status.get("success") and is_draft_update:
                     draft_version_info = {
                         "version": pgvector_write_status.get("version"),
                         "message_id": pgvector_write_status.get("message_id"),

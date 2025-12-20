@@ -189,7 +189,11 @@ class PgVectorRetriever:
             raise
 
     async def _add_message_to_conversation(
-        self, conversation_id: str, content: str, role: str = "user"
+        self,
+        conversation_id: str,
+        content: str,
+        role: str = "user",
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         Add a message to an existing conversation.
@@ -216,6 +220,7 @@ class PgVectorRetriever:
                     content,
                     role,
                     embedding,
+                    metadata,
                 )
 
                 await self._update_conversation_timestamp(session, conversation_id)
@@ -609,6 +614,7 @@ class PgVectorRetriever:
         content: str,
         role: str,
         embedding: List[float],
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         Insert a message into messages table.
@@ -625,7 +631,7 @@ class PgVectorRetriever:
                 id, conversation_id, sender, role, content, model, metadata, embedding, created_at, updated_at
             ) VALUES (
                 :id, :conversation_id, :sender, :role, :content, :model,
-                '{}'::jsonb, CAST(:embedding AS vector), now(), now()
+                CAST(:metadata AS jsonb), CAST(:embedding AS vector), now(), now()
             )
             """
         )
@@ -639,6 +645,7 @@ class PgVectorRetriever:
                 "content": content,
                 "model": None,
                 "embedding": embedding_value,
+                "metadata": json.dumps(metadata or {}),
             },
         )
 

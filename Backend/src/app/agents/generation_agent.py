@@ -28,7 +28,7 @@ class GenerationAgent:
         self.neo4j_agent = neo4j_agent  # compatibilidad DI
 
         self.default_max_tokens = settings.models.generation.generation_max_response_length
-        self.default_temperature = 0.2
+        self.default_temperature = 0.1
         self.max_payload_chars = getattr(settings.models.generation, "max_payload_chars", 200_000)
         self.section_char_limit = getattr(settings.models.generation, "section_char_limit", 80_000)
 
@@ -49,7 +49,7 @@ class GenerationAgent:
         max_tokens = int(params.get("max_tokens", self.default_max_tokens))
         temperature = float(params.get("temperature", self.default_temperature))
         extra_args = {k: v for k, v in params.items() if k not in {"max_tokens", "temperature"}}
-        current_datetime = sd.get("current_datetime")
+        
 
         # Base text y contexto
         conversation_context = sd.get("conversation_context") or {}
@@ -58,7 +58,7 @@ class GenerationAgent:
         vector_results = sd.get("vector_results")
 
         # Construir mensajes para el LLM (sin alterar el contenido de los prompts definidos)
-        system_directive = self._system_directive(operation=operation, goal=goal, current_datetime=current_datetime)
+        system_directive = self._system_directive(operation=operation, goal=goal)
         system_msg = {"role": "system", "content": system_directive}
 
         if operation == "compose":
@@ -345,23 +345,18 @@ class GenerationAgent:
     # Prompts                                                           #
     # ------------------------------------------------------------------ #
 
-    def _system_directive(self, *, operation: str, goal: str, current_datetime: Optional[str] = None) -> str:
+    def _system_directive(self, *, operation: str, goal: str) -> str:
         """
         System directive general y reusable.
         Sirve para generar, editar y chatear con soporte RAG.
         """
-        datetime_context = ""
-        if current_datetime:
-            datetime_context = (
-                f"\nFECHA ACTUAL: {current_datetime}. "
-                "Si debes calcular fechas, devuelve la fecha exacta."
-            )
+        
 
         if operation == "edit":
-            return self._prompt_edit_generic() + datetime_context
+            return self._prompt_edit_generic()
 
         if operation == "compose":
-            return (
+            base = (
                 "Eres un asistente profesional experto en derecho administrativo.\n"
                 "Tu tarea es generar un borrador claro, preciso y bien estructurado a partir del documento base.\n"
                 "Usa el contexto proporcionado solo si es relevante.\n"
@@ -369,8 +364,19 @@ class GenerationAgent:
                 "Devuelve SOLO el documento final, sin comentarios ni análisis.\n"
                 "No repitas textualmente el documento base salvo que sea estrictamente necesario.\n"
                 "Escribe en español neutro, formal pero comprensible."
-                + datetime_context
             )
+            if goal == "draft_official_response":
+                base += (
+                    "\nFormato esperado (sin títulos extra ni notas):\n"
+                    "1. Encabezado y referencia.\n"
+                    "2. Resumen breve de los hechos relevantes.\n"
+                    "3. Derechos invocados.\n"
+                    "4. Consideraciones jurídicas (si faltan datos, indícalo).\n"
+                    "5. Decisión y órdenes concretas.\n"
+                    "6. Notificación y cierre.\n"
+                    "No uses viñetas ni meta-comentarios."
+                )
+            return base
 
         # chat (default)
         return (
@@ -378,8 +384,9 @@ class GenerationAgent:
             "Responde únicamente a la pregunta actual.\n"
             "Usa el contexto disponible solo si aporta valor.\n"
             "No repitas información innecesaria.\n"
+            "No analices ni resumas documentos si el usuario no lo pide.\n"
+            "No uses HTML ni etiquetas.\n"
             "Si no sabes algo, dilo con claridad."
-            + datetime_context
         )
 
     def _prompt_edit_generic(self) -> str:
@@ -414,37 +421,50 @@ class GenerationAgent:
         """
 
         parts: List[str] = []
+        normalized_query = (user_query or "").strip().lower()
+        simple_greetings = {
+            "hola",
+            "buenas",
+            "buenos dias",
+            "buenas tardes",
+            "buenas noches",
+            "hello",
+            "hi",
+        }
+        is_simple_greeting = normalized_query in simple_greetings or len(normalized_query) <= 3
 
         # 1. Consulta del usuario
         parts.append("<consulta_usuario>")
         parts.append(self._trim_if_needed(user_query or "", 12_000))
         parts.append("</consulta_usuario>\n")
 
-        # 2. Contexto estructurado (Neo4j)
-        parts.append("<contexto_estructurado>")
-        parts.append(
-            self._format_graph_results_for_llm(
-                context_bundle.get("graph_results"),
-                operation="general",
+        if not is_simple_greeting:
+            # 2. Contexto estructurado (Neo4j)
+            parts.append("<contexto_estructurado>")
+            parts.append(
+                self._format_graph_results_for_llm(
+                    context_bundle.get("graph_results"),
+                    operation="general",
+                )
             )
-        )
-        parts.append("</contexto_estructurado>\n")
+            parts.append("</contexto_estructurado>\n")
 
-        # 3. Contexto vectorial (documentos similares)
-        parts.append("<contexto_documentos>")
-        parts.append(self._safe_json_dumps(context_bundle.get("vector_results")))
-        parts.append("</contexto_documentos>\n")
+            # 3. Contexto vectorial (documentos similares)
+            parts.append("<contexto_documentos>")
+            parts.append(self._safe_json_dumps(context_bundle.get("vector_results")))
+            parts.append("</contexto_documentos>\n")
 
-        # 4. Historial de conversación
-        parts.append("<historial_conversacion>")
-        parts.append(self._safe_json_dumps(context_bundle.get("conversation_context")))
-        parts.append("</historial_conversacion>\n")
+            # 4. Historial de conversación
+            parts.append("<historial_conversacion>")
+            parts.append(self._safe_json_dumps(context_bundle.get("conversation_context")))
+            parts.append("</historial_conversacion>\n")
 
         parts.append(
             "INSTRUCCIÓN FINAL:\n"
             "Usa el contexto SOLO si es relevante.\n"
             "No inventes información.\n"
-            "Responde de forma clara y estructurada."
+            "No uses HTML ni etiquetas.\n"
+            "Si el usuario saluda, responde breve y amable."
         )
 
         payload = "\n".join(parts)

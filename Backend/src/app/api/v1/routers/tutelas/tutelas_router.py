@@ -1,8 +1,6 @@
 ﻿"""
-Router minimal de tutelas para generar/consultar conversation_id.
+Router sirve para generar/consultar conversation_id.
 
-Este router evita dependencias del dominio de tutelas eliminado y solo crea
-registros en app_conversations usando un UUID estable (v5) derivado del tutela_id.
 """
 
 import json
