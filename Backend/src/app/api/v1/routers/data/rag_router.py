@@ -8,6 +8,7 @@ extracción de conocimiento y sincronización entre Neo4j y PostgreSQL.
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
+import json
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
@@ -17,9 +18,21 @@ from app.extensions import get_logger
 from app.services.ai.ollama_service import OllamaService
 from app.services.embeddings.embedding_service import get_embedding_service
 from app.services.retrieval.neo4j_retriever_service import Neo4jRetrieverService
+from app.schemas.normography_schemas import (
+    BulkLoadRequest,
+    BulkLoadResponse,
+    DocumentProcessRequest,
+    DocumentProcessResponse,
+    NormographyUpdateRequest,
+    NormographyUpdateResponse,
+)
+from app.services.documents.document_processor_service import DocumentProcessorService
 
 import importlib
 import importlib.util
+
+logger = get_logger(__name__)
+router = APIRouter(prefix="/rag", tags=["rag"])
 
 
 def _module_available(name: str) -> bool:
@@ -62,13 +75,6 @@ else:
         success: bool = False
         error_message: Optional[str] = None
 
-if _module_available("app.services.auth.auth_service"):
-    _auth_mod = importlib.import_module("app.services.auth.auth_service")
-    get_current_user = _auth_mod.get_current_user
-else:
-    async def get_current_user() -> str:
-        return "anonymous"
-
 if _module_available("app.services.documents.document_processor_service"):
     _doc_mod = importlib.import_module("app.services.documents.document_processor_service")
     DocumentProcessorService = _doc_mod.DocumentProcessorService
@@ -108,16 +114,6 @@ if _module_available("app.services.normography.normography_service"):
 else:
     NormographyService = None
 
-if _module_available("app.agents.security_agent") and _module_available("app.schemas.graph_schemas"):
-    _sec_mod = importlib.import_module("app.agents.security_agent")
-    _graph_mod = importlib.import_module("app.schemas.graph_schemas")
-    SecurityAgent = _sec_mod.SecurityAgent
-    PetitionState = _graph_mod.PetitionState
-    _SECURITY_AGENT_AVAILABLE = True
-else:
-    SecurityAgent = None
-    PetitionState = None
-    _SECURITY_AGENT_AVAILABLE = False
 logger = get_logger(__name__)
 router = APIRouter(prefix="/rag", tags=["rag"])
 
@@ -135,7 +131,8 @@ async def _sync_neo4j_to_postgres(
 
     Retorna:
         Diccionario con estadísticas de sincronización
-    """
+    """
+
     try:
         logger.info(
             f"Iniciando sincronización Neo4j → PostgreSQL después de {operation_type}"
@@ -193,7 +190,8 @@ async def _extract_all_nodes_from_neo4j(neo4j_driver) -> List[Dict[str, Any]]:
     Retorna:
         Lista de diccionarios con datos de nodos para sincronización
     """
-    try:
+    try:
+
         from app.config.settings import get_settings
 
         settings = get_settings()
@@ -238,7 +236,8 @@ async def _extract_all_edges_from_neo4j(neo4j_driver) -> List[Dict[str, Any]]:
     """
     Extrae todas las relaciones de Neo4j en formato compatible con PostgreSQL.
     """
-    try:
+    try:
+
         from app.config.settings import get_settings
 
         settings = get_settings()
@@ -306,7 +305,9 @@ async def _extract_all_edges_from_neo4j(neo4j_driver) -> List[Dict[str, Any]]:
 async def _generate_embeddings_for_law(neo4j_driver, embedding_service, law_name: str):
     """
     Genera embeddings para todos los nodos de una ley específica que no los tengan.
-    """
+    """
+
+
     from app.config.settings import get_settings
 
     settings = get_settings()
@@ -417,7 +418,6 @@ async def neo4j_semantic_search(
     req: Neo4jSearchRequest,
     neo4j_driver=Depends(get_neo4j_driver),
     embedding_service=Depends(get_embedding_service),
-    current_user: str = Depends(get_current_user),
 ) -> Neo4jSearchResponse:
     """
     Realiza búsqueda semántica en Neo4j usando embeddings.
@@ -426,7 +426,6 @@ async def neo4j_semantic_search(
         req: Solicitud de búsqueda con query, límite y umbral de similitud
         neo4j_driver: Driver de Neo4j (inyectado)
         embedding_service: Servicio de embeddings (inyectado)
-        current_user: Usuario autenticado (o "anonymous" si no hay autenticación)
 
     Retorna:
         Neo4jSearchResponse con resultados de la búsqueda semántica
@@ -440,7 +439,7 @@ async def neo4j_semantic_search(
             driver=neo4j_driver, settings=settings, embedding_service=embedding_service
         )
 
-        logger.info(f"Búsqueda semántica Neo4j solicitada por usuario: {current_user}")
+        logger.info(f"Búsqueda semántica Neo4j solicitada")
 
         result = await retriever.semantic_search(
             query=req.query,
@@ -458,7 +457,7 @@ async def neo4j_semantic_search(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Neo4j semantic search error para usuario {current_user}: {e}")
+        logger.error(f"Neo4j semantic search error: {e}")
         raise HTTPException(status_code=500, detail="Neo4j semantic search failed")
 
 
@@ -481,7 +480,6 @@ async def neo4j_rag_generate(
     req: Neo4jGenerateRequest,
     neo4j_driver=Depends(get_neo4j_driver),
     embedding_service=Depends(get_embedding_service),
-    current_user: str = Depends(get_current_user),
 ) -> Neo4jGenerateResponse:
     """
     Genera texto usando RAG (Retrieval-Augmented Generation) con contexto de Neo4j.
@@ -490,62 +488,18 @@ async def neo4j_rag_generate(
         req: Solicitud de generación con query, parámetros de búsqueda y generación
         neo4j_driver: Driver de Neo4j (inyectado)
         embedding_service: Servicio de embeddings (inyectado)
-        current_user: Usuario autenticado (o "anonymous" si no hay autenticación)
 
     Retorna:
         Neo4jGenerateResponse con texto generado y resumen del contexto usado
     """
     try:
         import re
-        import time
         from app.config.settings import get_settings
 
         settings = get_settings()
 
-        logger.info(f"Generación RAG Neo4j solicitada por usuario: {current_user}")
-
-        if _SECURITY_AGENT_AVAILABLE:
-            security_agent = SecurityAgent()
-            security_state = PetitionState(
-                conversation_id=f"neo4j_endpoint_{int(time.time())}",
-                user_query=req.query,
-                workflow_metadata={
-                    "trace_id": f"neo4j_{int(time.time())}",
-                    "endpoint": "/neo4j/generate",
-                    "user": current_user,
-                },
-            )
-
-            security_result = await security_agent.run(security_state)
-
-            # Si SecurityAgent bloquea, retornar mensaje de seguridad
-            if security_result.get("should_block", False):
-                security_validation = security_result.get("security_validation", {})
-                logger.warning(
-                    f"Neo4j RAG endpoint: Request blocked by SecurityAgent para usuario: {current_user}",
-                    extra={
-                        "endpoint": "/neo4j/generate",
-                        "user": current_user,
-                        "threat_level": security_validation.get("threat_level"),
-                        "reason": security_validation.get("reason"),
-                        "patterns": security_validation.get("matched_patterns"),
-                    },
-                )
-
-                return Neo4jGenerateResponse(
-                    text=security_result.get(
-                        "final_response", "Request blocked for security reasons"
-                    ),
-                    context_summary={"blocked": True, "reason": "security_violation"},
-                )
-
-            # Usar query sanitizada si fue limpiada
-            safe_query = security_result.get("user_query", req.query)
-        else:
-            logger.warning(
-                "SecurityAgent not available; skipping security checks for /neo4j/generate"
-            )
-            safe_query = req.query
+        logger.info(f"Generación RAG Neo4j solicitada")
+        safe_query = req.query
         retriever = Neo4jRetrieverService(
             driver=neo4j_driver, settings=settings, embedding_service=embedding_service
         )
@@ -601,10 +555,9 @@ async def neo4j_rag_generate(
         for pattern in dangerous_patterns:
             if re.search(pattern, text, re.IGNORECASE):
                 logger.warning(
-                    f"Neo4j RAG endpoint: Dangerous output censored para usuario: {current_user}",
+                    "Neo4j RAG endpoint: Dangerous output censored",
                     extra={
                         "endpoint": "/neo4j/generate",
-                        "user": current_user,
                         "pattern": pattern,
                     },
                 )
@@ -639,7 +592,7 @@ async def neo4j_rag_generate(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Neo4j RAG generate error para usuario {current_user}: {e}")
+        logger.error(f"Neo4j RAG generate error: {e}")
         raise HTTPException(status_code=500, detail="Neo4j RAG generation failed")
 
 
@@ -769,8 +722,62 @@ async def process_pdf_and_upload_to_neo4j(
         raise HTTPException(status_code=503, detail="Normography schemas not available")
     if DocumentProcessorService is None or NormographyService is None:
         raise HTTPException(status_code=503, detail="Normography services not available")
+    from app.config.settings import get_settings
 
-    raise HTTPException(status_code=501, detail="Endpoint disabled: missing document processing services")
+    try:
+        section_list = json.loads(section_path) if section_path else []
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=400,
+            detail="section_path debe ser un JSON valido de lista",
+        )
+
+    if section_list is not None and not isinstance(section_list, list):
+        raise HTTPException(
+            status_code=400,
+            detail="section_path debe ser una lista JSON",
+        )
+
+    processor = DocumentProcessorService()
+    try:
+        file.file.seek(0)
+    except Exception:
+        pass
+
+    raw_text = processor.extract_text_from_file(file)
+    if raw_text is None:
+        return NormographyUpdateResponse(
+            success=False,
+            error_message="No se pudo extraer texto del documento",
+        )
+
+    clean_text = processor.clean_text_to_file(raw_text)
+    markdown_content = processor.normalize_to_markdown(clean_text)
+
+    if section_list:
+        markdown_content = processor.segment_by_path(markdown_content, section_list)
+        if not markdown_content:
+            return NormographyUpdateResponse(
+                success=False,
+                error_message="No se pudo extraer la seccion solicitada",
+            )
+
+    settings = get_settings()
+    normography_service = NormographyService(
+        driver=neo4j_driver, settings=settings, embedding_service=embedding_service
+    )
+
+    result = await normography_service._process_full_document(
+        category=category,
+        law_name=law_name,
+        markdown_content=markdown_content,
+    )
+
+    logger.info(" Sincronizando carga de documento con PostgreSQL...")
+    sync_stats = await _sync_neo4j_to_postgres(neo4j_driver, "pdf_upload")
+    logger.info(f" Sincronizacion completada: {sync_stats}")
+
+    return result
 
 #  NUEVO ENDPOINT: Sincronización manual Neo4j → PostgreSQL
 @router.post("/normography/sync-to-postgres")
@@ -838,7 +845,8 @@ async def migrate_section_labels(
     Retorna:
         Dict con estadísticas de la migración
     """
-    try:
+    try:
+
         from app.config.settings import get_settings
 
         logger.info("🚀 Iniciando migración de etiquetas de secciones")
@@ -886,7 +894,8 @@ async def regenerate_embeddings_with_centralized_service(
     Este endpoint resuelve inconsistencias de embeddings causadas por el uso
     de diferentes servicios de embeddings en el pasado.
     """
-    try:
+    try:
+
         from app.config.settings import get_settings
 
         logger.info("Iniciando regeneración de embeddings con servicio centralizado")
@@ -1011,6 +1020,14 @@ async def regenerate_embeddings_with_centralized_service(
         raise HTTPException(
             status_code=500, detail=f"Error regenerando embeddings: {str(e)}"
         )
+
+
+
+
+
+
+
+
 
 
 

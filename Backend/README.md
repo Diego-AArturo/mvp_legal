@@ -135,7 +135,255 @@ Servicios FastAPI para chat con streaming SSE y flujos de generacion/orquestacio
 
 ### Datos (`/rag`)
 
-- Endpoints de RAG/normografia para carga y procesamiento de documentos legales (bulk load). Ver `src/app/api/v1/routers/data/rag_router.py` para los payloads especificos (incluye clases `BulkLoadRequest`, `DocumentProcessRequest`, etc.).
+- Endpoints de RAG/normografia para carga y procesamiento de documentos legales.
+
+1) **POST `/rag/normography/process-document`** Procesa un documento normativo por ruta en disco.
+
+   - **Body**:
+     ```json
+     {
+       "file_path": "C:\\ruta\\archivo.pdf",
+       "section_path": ["TITULO I", "CAPITULO II"]
+     }
+     ```
+   - **Respuesta (JSON)**:
+     ```json
+     {
+       "success": true,
+       "section_content": "markdown extraido",
+       "processing_stats": {
+         "file_path": "C:\\ruta\\archivo.pdf",
+         "section_path": ["TITULO I", "CAPITULO II"],
+         "content_length": 1234
+       }
+     }
+     ```
+
+2) **POST `/rag/normography/update-section`** Actualiza una seccion especifica en Neo4j.
+
+   - **Body**:
+     ```json
+     {
+       "category": "Derecho laboral",
+       "law_name": "Ley 100 de 1993",
+       "path": ["TITULO I", "CAPITULO II"],
+       "markdown_content": "### Articulo 1\nTexto..."
+     }
+     ```
+   - **Respuesta (JSON)**:
+     ```json
+     {
+       "success": true,
+       "nodes_created": 10,
+       "relations_created": 9
+     }
+     ```
+
+3) **POST `/rag/normography/bulk-load`** Carga masiva desde Markdown.
+
+   - **Body**:
+     ```json
+     {
+       "file_path": "C:\\ruta\\normas.md",
+       "skip_normalization": false
+     }
+     ```
+   - **Respuesta (JSON)**:
+     ```json
+     {
+       "success": true,
+       "nodes_processed": 1200,
+       "relations_created": 1180,
+       "processing_time": 12.34,
+       "normalized_file_path": "C:\\ruta\\normas_normalizado.md"
+     }
+     ```
+
+4) **POST `/rag/normography/process-pdf-and-upload`** Procesa un PDF/DOCX y lo carga en Neo4j.
+
+   - **Body (multipart/form-data)**:
+     - `file`: archivo PDF/DOCX/DOC
+     - `category`: string
+     - `law_name`: string
+     - `section_path`: JSON string (ej. `["TITULO I","CAPITULO II"]`)
+   - **Respuesta (JSON)**:
+     ```json
+     {
+       "success": true,
+       "nodes_created": 120,
+       "relations_created": 115
+     }
+     ```
+
+5) **POST `/rag/normography/sync-to-postgres`** Sincroniza Neo4j -> PostgreSQL.
+
+   - **Body**: ninguno
+   - **Respuesta (JSON)**:
+     ```json
+     {
+       "success": true,
+       "message": "Sincronizacion completada exitosamente",
+       "nodes_synced": 1200,
+       "edges_synced": 1180
+     }
+     ```
+
+6) **POST `/rag/normography/migrate-section-labels`** Migra etiquetas genericas de seccion.
+
+   - **Body**: ninguno
+   - **Respuesta (JSON)**:
+     ```json
+     {
+       "success": true,
+       "message": "Migracion completada exitosamente",
+       "stats": {
+         "titulo_migrated": 10,
+         "capitulo_migrated": 8,
+         "libro_migrated": 2,
+         "parte_migrated": 1,
+         "total_migrated": 21,
+         "errors": 0
+       }
+     }
+     ```
+
+7) **POST `/rag/normography/regenerate-embeddings`** Regenera embeddings en Neo4j.
+
+   - **Body**: ninguno
+   - **Respuesta (JSON)**:
+     ```json
+     {
+       "success": true,
+       "message": "Embeddings regenerados exitosamente usando EmbeddingService centralizado",
+       "stats": {
+         "processed": 1000,
+         "updated": 990,
+         "errors": 10
+      }
+    }
+    ```
+
+8) **POST `/rag/neo4j/search`** Busqueda semantica en Neo4j.
+
+   - **Body**:
+     ```json
+     {
+       "query": "consulta legal",
+       "limit": 10,
+       "similarity_threshold": 0.7
+     }
+     ```
+   - **Respuesta (JSON)**:
+     ```json
+     {
+       "results": {
+         "results": [],
+         "total_found": 0,
+         "execution_time": 0.12,
+         "search_strategy": "normografia_vector",
+         "metadata": {}
+       }
+     }
+     ```
+
+9) **POST `/rag/neo4j/generate`** Generacion RAG con contexto Neo4j.
+
+   - **Body**:
+     ```json
+     {
+       "query": "consulta legal",
+       "limit": 10,
+       "similarity_threshold": 0.7,
+       "max_tokens": 1200,
+       "temperature": 0.7,
+       "model_preference": "auto"
+     }
+     ```
+   - **Respuesta (JSON)**:
+     ```json
+     {
+       "text": "respuesta generada",
+       "context_summary": {
+         "entities": 3,
+         "has_relationships": true
+      }
+    }
+    ```
+
+### Normografia (`/normography`)
+
+1) **GET `/normography/laws/graph`** Obtiene nodos y relaciones del grafo legal.
+
+   - **Query params**:
+     - `limit`: int (default 500)
+     - `offset`: int (default 0)
+     - `edge_limit`: int (default 5000)
+     - `edge_offset`: int (default 0)
+     - `include_disabled`: bool (default true)
+   - **Respuesta (JSON)**:
+     ```json
+     {
+       "nodes": [
+         {
+           "node_uid": "uuid",
+           "element_id": "elementId(n)",
+           "label": "Ley",
+           "graph_id": "ley_100_de_1993",
+           "nombre": "Ley 100 de 1993",
+           "texto": "texto...",
+           "tipo": "Ley",
+           "enabled": true
+         }
+       ],
+       "edges": [
+         {
+           "edge_id": 1,
+           "rel_type": "PERTENECE_A",
+           "start_node": "uuid",
+           "end_node": "uuid",
+           "enabled": true
+         }
+       ],
+       "meta": {
+         "count_nodes": 1,
+         "count_edges": 1,
+         "include_disabled": true,
+         "limits": {
+           "nodes": 500,
+           "edges": 5000
+         }
+       }
+     }
+     ```
+
+2) **PATCH `/normography/laws/{node_uid}`** Actualiza una ley en Neo4j y PostgreSQL.
+
+   - **Path params**:
+     - `node_uid`: UUID del nodo
+   - **Body**:
+     ```json
+     {
+       "nombre": "Ley 100 de 1993 (actualizada)",
+       "texto": "texto actualizado...",
+       "tipo": "Ley",
+       "source": "fuente",
+       "tematica": "salud",
+       "resumen_tematica": "resumen",
+       "enabled": true,
+       "properties": {
+         "origen": "manual"
+       }
+     }
+     ```
+   - **Respuesta (JSON)**:
+     ```json
+     {
+       "success": true,
+       "node_uid": "uuid",
+       "element_id": "elementId(n)",
+       "message": "Ley actualizada exitosamente en Neo4j y PostgreSQL"
+     }
+     ```
 
 ## Notas de uso
 

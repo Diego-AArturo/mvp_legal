@@ -40,7 +40,7 @@ class GenerationAgent:
         sd = self._to_state_dict(state)
         trace_id = (sd.get("workflow_metadata") or {}).get("trace_id") or f"gen-{int(time.time())}"
         gen_req: Dict[str, Any] = sd.get("generation_request") or {}
-        operation = (gen_req.get("operation") or "chat").lower()
+        operation = str(gen_req.get("operation") or "chat").strip().lower()
         goal = gen_req.get("goal") or self._default_goal(operation)
         user_query = sd.get("user_query", "") or ""
         conversation_id = sd.get("conversation_id", "")
@@ -293,39 +293,6 @@ class GenerationAgent:
         formatted = [_format_item(item) for item in results[:max_results]]
         return "\n".join([f"[RESULTADOS NEO4J - Estrategia {graph_dict.get('search_strategy', 'desconocida')}]:"] + formatted)
 
-    def _user_payload(self, *, user_query: str, context_bundle: Dict[str, Any]) -> str:
-        parts: List[str] = []
-        parts.append("<consulta_usuario>")
-        parts.append(self._trim_if_needed(user_query or "", 12_000))
-        parts.append("</consulta_usuario>\n")
-
-        parts.append("<contexto_estructurado>")
-        parts.append(
-            self._format_graph_results_for_llm(
-                context_bundle.get("graph_results"),
-                operation="general",
-            )
-        )
-        parts.append("</contexto_estructurado>\n")
-
-        parts.append("<contexto_documentos>")
-        parts.append(self._safe_json_dumps(context_bundle.get("vector_results")))
-        parts.append("</contexto_documentos>\n")
-
-        parts.append("<historial_conversacion>")
-        parts.append(self._safe_json_dumps(context_bundle.get("conversation_context")))
-        parts.append("</historial_conversacion>\n")
-
-        parts.append(
-            "INSTRUCCIÓN FINAL:\n"
-            "Usa el contexto SOLO si es relevante.\n"
-            "No inventes información.\n"
-            "Responde de forma clara y estructurada."
-        )
-
-        payload = "\n".join(parts)
-        return self._trim_if_needed(payload, self.max_payload_chars)
-
     async def _call_llm(
         self,
         messages: List[Dict[str, str]],
@@ -362,19 +329,124 @@ class GenerationAgent:
                 "Usa el contexto proporcionado solo si es relevante.\n"
                 "No inventes datos. Si la información es insuficiente, indícalo claramente.\n"
                 "Devuelve SOLO el documento final, sin comentarios ni análisis.\n"
-                "No repitas textualmente el documento base salvo que sea estrictamente necesario.\n"
                 "Escribe en español neutro, formal pero comprensible."
             )
-            if goal == "draft_official_response":
+            normalized_goal = str(goal or "").strip().lower()
+            if normalized_goal == "draft_official_response":
                 base += (
-                    "\nFormato esperado (sin títulos extra ni notas):\n"
-                    "1. Encabezado y referencia.\n"
-                    "2. Resumen breve de los hechos relevantes.\n"
-                    "3. Derechos invocados.\n"
-                    "4. Consideraciones jurídicas (si faltan datos, indícalo).\n"
-                    "5. Decisión y órdenes concretas.\n"
-                    "6. Notificación y cierre.\n"
-                    "No uses viñetas ni meta-comentarios."
+                    """**TAREA DE ROL: ACCIONADO**
+
+                    **Misión:** Redactar la defensa principal de la entidad.
+                    **Argumento Clave:** Demostrar la **debida diligencia** de la Registraduría (que ya estamos actuando o que actuamos correctamente según la ley).
+
+                    ---
+                    **INSTRUCCIÓN:** Redacta la contestación usando **EXACTAMENTE** la siguiente plantilla.
+                    No añadas secciones. No cambies los títulos. Rellena los marcadores `[MARCADOR]` con los datos proporcionados.
+                    Sigue la `REGLA DE RELLENO` para el argumento (Sección IV) y la `REGLA DE PETICIÓN` para la petición (Sección VI).
+
+                    ---------
+                    ---------
+                    [Ciudad y Fecha Actual]
+
+                    Doctor(a)
+                    **[Nombre del Juez/Magistrado - si no se sabe, usar 'JUEZ DE TUTELA']**
+                    **[Nombre del Juzgado - si no se sabe, usar 'JUZGADO DE REPARTO']**
+                    [Email del Juzgado - si se sabe]
+                    E. S. D.
+
+                    **Referencia:** Acción de Tutela
+                    **Radicado:** [Número de Radicado de la tutela]
+                    **Accionante:** [Nombre del Accionante]
+                    **Accionado:** **REGISTRADURÍA NACIONAL DEL ESTADO CIVIL**
+                    [Opcional: Listar otras entidades accionadas o vinculadas si se mencionan]
+                    **RNEC Interno:** [Número Interno RNEC si se tiene, si no, omitir esta línea]
+
+                    Respetado Doctor(a) Juez:
+
+                    [Párrafo de presentación: "Yo, [Nombre del Jefe Jurídico], en mi calidad de Jefe de la Oficina Jurídica de la REGISTRADURÍA NACIONAL DEL ESTADO CIVIL (RNEC), conforme al artículo 33 del Decreto 1010 de 2000, presento contestación a la acción de tutela de la referencia..."]
+
+                    **I. PLANTEAMIENTO DE LA ACCIÓN CONSTITUCIONAL**
+                    [Los hechos clave de la tutela, basado en <tutela_a_responder>.]
+
+                    **II. PRETENSIONES**
+                    [Cita textualmente (en bloque de comillas) las pretensiones del accionante que están en <tutela_a_responder>.]
+
+                    **III. NIVELES DE COMPETENCIA**
+                    [Explica por qué la RNEC SÍ es competente para este trámite (ej. Registro Civil, Identificación), usando el Decreto 1010 del <contexto_juridico_neo4j>.]
+
+                    **IV. CONSIDERACIÓN FRENTE A LA SITUACIÓN**
+                    [Rellena esta sección siguiendo la REGLA DE RELLENO PARA EL ARGUMENTO.]
+
+                    **V. ANEXOS**
+                    [Enlista las pruebas reales que demuestran la acción (ej. "Correo electrónico remisorio por competencia", "Consulta a sistemas SIRC"). Si no hay, indica "No se aportan anexos.".]
+
+                    **VI. PETICIÓN**
+                    [Rellena esta sección usando EXACTAMENTE UNA de las 3 redacciones de la REGLA DE PETICIÓN OBLIGATORIA.]
+
+                    **VII. NOTIFICACIONES**
+                    [Indica los datos de notificación de la Oficina Jurídica.]
+
+                    Atentamente,
+
+                    (Firma)
+                    **[NOMBRE DEL JEFE DE LA OFICINA JURÍDICA]**
+                    Jefe de la Oficina Jurídica
+                    Registraduría Nacional del Estado Civil
+
+                    ---
+                    
+                    ---
+
+                    ### REGLAS DE RELLENO (OBLIGATORIAS)
+
+                    **REGLA DE RELLENO PARA IV. CONSIDERACIÓN (EL ARGUMENTO)**
+                    Tu argumento debe ser claro y seguir esta lógica:
+                    1.  **Presentar Hechos Verificados:** Describe detalladamente lo que la entidad encontró en los sistemas internos (`<verificacion_interna_accionante>`). Contrasta esto con lo que alega la tutela.
+                    2.  **Identificar Procedimiento Correcto:** Explica cuál es el trámite administrativo legalmente establecido (ej. "Resolución 10017 de 2021"), usando los datos de `<contexto_juridico_neo4j>`.
+                    3.  **Demostrar Acción (El argumento más fuerte):** Informa al juez que la entidad **YA INICIÓ** las acciones para resolver el caso (ej. "Esta Oficina remitió el caso a la Dirección Nacional de Registro Civil", "La dependencia ya abocó conocimiento...").
+
+                    ---
+
+                    **REGLA DE PETICIÓN OBLIGATORIA (PARA SECCIÓN VI. PETICIÓN)**
+
+                    **ADVERTENCIA CRÍTICA:** Debes usar EXACTAMENTE una de estas tres estrategias según el ÁRBOL DE DECISIÓN.
+
+                    **ÁRBOL DE DECISIÓN PARA ELEGIR LA ESTRATEGIA:**
+                    1.  ¿Existe un problema/error reconocido (ej: duplicidad, falta de documento)?
+                        * NO → Usa **NEGAR** (Estrategia 3)
+                        * SÍ → Ve al paso 2
+                    2.  ¿El problema ya fue resuelto COMPLETAMENTE antes de la tutela?
+                        * SÍ → Usa **CARENCIA ACTUAL DE OBJETO** (Estrategia 1)
+                        * NO → Ve al paso 3
+                    3.  ¿Se han iniciado acciones administrativas pero aún no se completan?
+                        * SÍ → Usa **NO TUTELAR** (Estrategia 2) ← **ESTA ES LA MÁS COMÚN**
+                        * NO → Hay un error en tu razonamiento, revisa
+
+                    ---
+                    **Estrategia 1: CARENCIA ACTUAL DE OBJETO**
+                    * **Cuándo usar:** ÚNICAMENTE si el problema YA FUE COMPLETAMENTE RESUELTO (ej. "YA SE EXPIDIÓ", "YA SE CORRIGIÓ").
+                    * **Redacción exacta (copia y pega):**
+                        ```
+                        Considerando lo anteriormente expuesto, solicito respetuosamente a su Señoría:
+                        Que se declare la CARENCIA ACTUAL DE OBJETO de la presente acción de tutela, toda vez que la situación que dio origen a la presente acción constitucional fue resuelta por esta entidad con anterioridad a la notificación de la tutela, cesando así la presunta vulneración de los derechos fundamentales invocados por el accionante.
+                        ```
+
+                    **Estrategia 2: NO TUTELAR (LA MÁS COMÚN)**
+                    * **Cuándo usar:** Si el trámite YA INICIÓ pero está EN CURSO (ej. "se remitió el caso", "la dependencia abocó conocimiento").
+                    * **Redacción exacta (copia y pega):**
+                        ```
+                        Considerando lo anteriormente expuesto, solicito respetuosamente a su Señoría:
+                        Que se NIEGUE el amparo solicitado por el accionante, toda vez que la Registraduría Nacional del Estado Civil ha iniciado las acciones administrativas correspondientes dentro de los plazos legales establecidos, actuando con la debida diligencia y dentro del marco de sus competencias, por lo que no existe vulneración alguna de los derechos fundamentales invocados.
+                        ```
+
+                    **Estrategia 3: NEGAR**
+                    * **Cuándo usar:** Si la entidad actuó correctamente desde el inicio y NO EXISTE NINGÚN ERROR que corregir (ej. "no hay duplicidad", "no cumple requisitos").
+                    * **Redacción exacta (copia y pega):**
+                        ```
+                        Considerando lo anteriormente expuesto, solicito respetuosamente a su Señoría:
+                        Que se NIEGUE el amparo solicitado, toda vez que esta entidad ha actuado conforme a derecho, respetando el debido proceso administrativo y sin que se configure vulneración alguna de los derechos fundamentales invocados por el accionante.
+                        ```
+                    """
                 )
             return base
 
@@ -434,9 +506,9 @@ class GenerationAgent:
         is_simple_greeting = normalized_query in simple_greetings or len(normalized_query) <= 3
 
         # 1. Consulta del usuario
-        parts.append("<consulta_usuario>")
+        parts.append("<tutela_a_responder>")
         parts.append(self._trim_if_needed(user_query or "", 12_000))
-        parts.append("</consulta_usuario>\n")
+        parts.append("</tutela_a_responder>\n")
 
         if not is_simple_greeting:
             # 2. Contexto estructurado (Neo4j)
